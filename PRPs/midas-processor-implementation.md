@@ -259,7 +259,7 @@ CREATE src/app/services/csv_parser.rs:
   - PARSE dynamic measurement columns
   - EXTRACT quality flag columns (q_* pattern)
   - AVOID code duplication by the station registry service from Task 5
-  - CREATE am ignored integration test to demonstrate Station Registry Service parsing
+  - CREATE an ignored integration test to demonstrate Station Registry Service parsing
 
 Task 7: Record Processor
 CREATE src/app/services/record_processor.rs:
