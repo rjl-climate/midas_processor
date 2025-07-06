@@ -3,6 +3,14 @@ name = "midas_processor"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "midas-processor"
+path = "src/main.rs"
+
+[[bin]]
+name = "station-summary"
+path = "src/bin/station-summary.rs"
+
 [dependencies]
 # Core data processing (temporarily disabled due to version conflict)
 # arrow = "48.0"

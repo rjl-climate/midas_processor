@@ -144,7 +144,7 @@ midas_processor/
 // Filter capability files to rec_st_ind = 9 only
 
 // CRITICAL: DateTime parsing for MIDAS timestamps
-// Format: "YYYY-MM-DD HH24:MI:SS" 
+// Format: "YYYY-MM-DD HH24:MI:SS"
 // Must convert to i64 nanoseconds for pandas compatibility
 ```
 
@@ -174,19 +174,19 @@ pub struct Observation {
     // Temporal information
     pub ob_end_time: DateTime<Utc>,
     pub ob_hour_count: i32,
-    
+
     // Station reference
     pub id: i32,                        // Maps to Station.src_id
     pub id_type: String,                // Usually "SRCE"
-    
+
     // Record metadata
     pub met_domain_name: String,        // Dataset identifier
     pub rec_st_ind: i32,               // Record status (1 supersedes 9)
     pub version_num: i32,              // QC version
-    
+
     // Station metadata (denormalized)
     pub station: Station,
-    
+
     // Dynamic measurements (varies by dataset)
     pub measurements: HashMap<String, f64>,
     pub quality_flags: HashMap<String, QualityFlag>,
@@ -258,6 +258,8 @@ CREATE src/app/services/csv_parser.rs:
   - HANDLE MIDAS-specific "NA" values
   - PARSE dynamic measurement columns
   - EXTRACT quality flag columns (q_* pattern)
+  - AVOID code duplication by the station registry service from Task 5
+  - CREATE am ignored integration test to demonstrate Station Registry Service parsing
 
 Task 7: Record Processor
 CREATE src/app/services/record_processor.rs:
@@ -296,17 +298,17 @@ impl StationRegistry {
     pub async fn load_from_cache(cache_path: &Path) -> Result<Self> {
         // PATTERN: Walk capability directories
         let mut stations = HashMap::new();
-        
+
         for dataset in datasets {
             let capability_path = cache_path.join(dataset).join("capability");
-            
+
             // CRITICAL: Recursive directory traversal
             for entry in WalkDir::new(capability_path) {
                 if entry.path().extension() == Some("csv") {
                     // PATTERN: Use csv::Reader with StringRecord for performance
                     let mut reader = csv::Reader::from_path(entry.path())?;
                     let mut record = csv::StringRecord::new();
-                    
+
                     while reader.read_record(&mut record)? {
                         // CRITICAL: Filter by rec_st_ind = 9
                         if record.get(REC_ST_IND_COL) == Some("9") {
@@ -317,7 +319,7 @@ impl StationRegistry {
                 }
             }
         }
-        
+
         Ok(Self { stations })
     }
 }
@@ -326,45 +328,45 @@ impl StationRegistry {
 impl BadcCsvParser {
     pub fn parse_file(path: &Path) -> Result<Vec<Observation>> {
         let mut reader = csv::Reader::from_path(path)?;
-        
+
         // CRITICAL: Skip header section until "data" marker
         let mut in_data_section = false;
         let mut observations = Vec::new();
-        
+
         for result in reader.records() {
             let record = result?;
-            
+
             // PATTERN: Detect data section start
             if !in_data_section && record.get(0) == Some("data") {
                 in_data_section = true;
                 continue;
             }
-            
+
             if in_data_section {
                 // PATTERN: Parse dynamic columns based on header
                 let observation = Self::parse_observation(&record)?;
                 observations.push(observation);
             }
         }
-        
+
         Ok(observations)
     }
-    
+
     fn parse_observation(record: &csv::StringRecord) -> Result<Observation> {
         // CRITICAL: Handle "NA" values
         let parse_optional = |val: &str| {
             if val == "NA" { None } else { val.parse().ok() }
         };
-        
+
         // PATTERN: Extract measurements and quality flags
         let mut measurements = HashMap::new();
         let mut quality_flags = HashMap::new();
-        
+
         for (i, field) in record.iter().enumerate() {
             if let Some(header) = headers.get(i) {
                 if header.starts_with("q_") {
                     let measure = header.trim_start_matches("q_");
-                    quality_flags.insert(measure.to_string(), 
+                    quality_flags.insert(measure.to_string(),
                         QualityFlag::from_str(field)?);
                 } else if !header.contains("_q") {
                     if let Some(value) = parse_optional(field) {
@@ -373,7 +375,7 @@ impl BadcCsvParser {
                 }
             }
         }
-        
+
         Ok(observation)
     }
 }
@@ -387,24 +389,24 @@ impl ParquetWriter {
             .set_max_row_group_size(1_000_000)  // 1M rows
             .set_write_batch_size(1024)
             .build();
-        
+
         let file = File::create(path)?;
         let writer = ArrowWriter::try_new(file, schema, Some(props))?;
-        
+
         Ok(Self { writer })
     }
-    
+
     pub fn write_batch(&mut self, observations: &[Observation]) -> Result<()> {
         // PATTERN: Convert to Arrow RecordBatch
         let batch = self.observations_to_record_batch(observations)?;
-        
+
         // CRITICAL: Monitor memory usage
         self.writer.write(&batch)?;
-        
+
         if self.writer.in_progress_size() > MEMORY_LIMIT {
             self.writer.flush()?;
         }
-        
+
         Ok(())
     }
 }
@@ -452,34 +454,34 @@ cargo check --all-targets          # Compile check
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_station_registry_load() {
         // GIVEN: Sample capability files
         let temp_dir = TempDir::new().unwrap();
         create_test_capability_files(&temp_dir);
-        
+
         // WHEN: Loading registry
         let registry = StationRegistry::load_from_cache(temp_dir.path()).unwrap();
-        
+
         // THEN: Stations are indexed correctly
         assert_eq!(registry.stations.len(), 3);
         assert!(registry.get_station(12345).is_some());
     }
-    
+
     #[test]
     fn test_csv_parser_badc_format() {
         // GIVEN: BADC-CSV file with header and data sections
         let csv_content = create_test_badc_csv();
-        
+
         // WHEN: Parsing file
         let observations = BadcCsvParser::parse_string(&csv_content).unwrap();
-        
+
         // THEN: Observations parsed correctly
         assert_eq!(observations.len(), 2);
         assert_eq!(observations[0].measurements.len(), 3);
     }
-    
+
     #[test]
     fn test_record_deduplication() {
         // GIVEN: Records with different rec_st_ind values
@@ -487,10 +489,10 @@ mod tests {
             create_observation_with_rec_st_ind(9),
             create_observation_with_rec_st_ind(1), // Should supersede
         ];
-        
+
         // WHEN: Processing records
         let deduplicated = RecordProcessor::deduplicate(records);
-        
+
         // THEN: Only rec_st_ind=1 remains
         assert_eq!(deduplicated.len(), 1);
         assert_eq!(deduplicated[0].rec_st_ind, 1);

@@ -13,7 +13,7 @@ fn main() {
     });
 
     let result = runtime.block_on(commands::run(args));
-    
+
     match result {
         Ok(_stats) => {
             // Success - stats have already been reported by the command
