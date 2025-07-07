@@ -18,8 +18,9 @@ pub mod constants;
 pub mod app {
     pub mod models;
     pub mod services {
-        pub mod csv_parser;
+        pub mod badc_csv_parser;
         pub mod parquet_writer;
+        pub mod progress;
         pub mod record_processor;
         pub mod station_registry;
     }
@@ -256,6 +257,23 @@ impl Error {
     pub fn unknown_dataset(dataset_name: impl Into<String>) -> Self {
         Self::UnknownDataset {
             dataset_name: dataset_name.into(),
+        }
+    }
+
+    /// Create an I/O error with a simple message
+    pub fn io_error(message: impl Into<String>) -> Self {
+        let message_str = message.into();
+        Self::Io {
+            message: message_str.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::Other, message_str),
+        }
+    }
+
+    /// Create a file format error
+    pub fn file_format(message: impl Into<String>) -> Self {
+        Self::BadcFormat {
+            file: "unknown".to_string(),
+            message: message.into(),
         }
     }
 }
