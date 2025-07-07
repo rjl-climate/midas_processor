@@ -13,6 +13,70 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 // =============================================================================
+// Processing Quality Control Framework
+// =============================================================================
+
+/// Processing quality flags for tracking parsing and processing operations
+///
+/// These flags track what happened during our processing pipeline and are completely
+/// separate from the original MIDAS quality control flags which are passed through
+/// without interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ProcessingFlag {
+    /// Value was successfully parsed and converted
+    ParseOk,
+    /// Value could not be parsed (e.g., "abc" as a number)
+    ParseFailed,
+    /// Value was missing ("NA" or empty in CSV)
+    MissingValue,
+    /// Station metadata was found and applied
+    StationFound,
+    /// Station metadata was missing, placeholder used
+    StationMissing,
+    /// Record kept as original (no duplicates found)
+    Original,
+    /// Record was superseded by a higher priority duplicate
+    Superseded,
+    /// Record was selected from multiple duplicates by processing rules
+    DuplicateResolved,
+}
+
+impl ProcessingFlag {
+    /// Check if this flag indicates a successful operation
+    /// Missing values are considered normal/successful since they're common in scientific data
+    pub fn is_success(self) -> bool {
+        matches!(
+            self,
+            ProcessingFlag::ParseOk
+                | ProcessingFlag::MissingValue  // Missing values are normal, not errors
+                | ProcessingFlag::StationFound
+                | ProcessingFlag::Original
+                | ProcessingFlag::DuplicateResolved
+        )
+    }
+
+    /// Get human-readable description of this processing flag
+    pub fn description(self) -> &'static str {
+        match self {
+            ProcessingFlag::ParseOk => "Successfully parsed and converted",
+            ProcessingFlag::ParseFailed => "Failed to parse value",
+            ProcessingFlag::MissingValue => "Value was missing or empty",
+            ProcessingFlag::StationFound => "Station metadata found and applied",
+            ProcessingFlag::StationMissing => "Station metadata missing, placeholder used",
+            ProcessingFlag::Original => "Original record, no duplicates",
+            ProcessingFlag::Superseded => "Superseded by higher priority record",
+            ProcessingFlag::DuplicateResolved => "Selected from multiple duplicates",
+        }
+    }
+}
+
+impl std::fmt::Display for ProcessingFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+// =============================================================================
 // Station Metadata Structure
 // =============================================================================
 
@@ -230,7 +294,12 @@ pub struct Observation {
     pub measurements: HashMap<String, f64>,
 
     /// Quality control flags for each measurement (raw values from CSV)
+    /// These are passed through exactly as received without interpretation
     pub quality_flags: HashMap<String, String>,
+
+    /// Processing quality flags tracking what happened during parsing/processing
+    /// These track our processing operations and are separate from original MIDAS QC flags
+    pub processing_flags: HashMap<String, ProcessingFlag>,
 
     // Processing metadata
     /// Met Office processing timestamp
@@ -255,6 +324,7 @@ impl Observation {
         station: Station,
         measurements: HashMap<String, f64>,
         quality_flags: HashMap<String, String>,
+        processing_flags: HashMap<String, ProcessingFlag>,
         meto_stmp_time: DateTime<Utc>,
         midas_stmp_etime: i32,
     ) -> Result<Self> {
@@ -270,6 +340,7 @@ impl Observation {
             station,
             measurements,
             quality_flags,
+            processing_flags,
             meto_stmp_time,
             midas_stmp_etime,
         };
@@ -358,6 +429,28 @@ impl Observation {
     /// Get all measurements (quality interpretation left to downstream processing)
     pub fn get_all_measurements(&self) -> &HashMap<String, f64> {
         &self.measurements
+    }
+
+    /// Get a processing flag by measurement or operation name
+    pub fn get_processing_flag(&self, name: &str) -> Option<ProcessingFlag> {
+        self.processing_flags.get(name).copied()
+    }
+
+    /// Set a processing flag for a measurement or operation
+    pub fn set_processing_flag(&mut self, name: String, flag: ProcessingFlag) {
+        self.processing_flags.insert(name, flag);
+    }
+
+    /// Check if any processing flags indicate failures
+    pub fn has_processing_errors(&self) -> bool {
+        self.processing_flags
+            .values()
+            .any(|flag| !flag.is_success())
+    }
+
+    /// Get all processing flags
+    pub fn get_all_processing_flags(&self) -> &HashMap<String, ProcessingFlag> {
+        &self.processing_flags
     }
 
     /// Check if this observation supersedes another (based on rec_st_ind)
@@ -553,6 +646,11 @@ mod tests {
         quality_flags.insert("air_temperature".to_string(), "0".to_string());
         quality_flags.insert("humidity".to_string(), "1".to_string());
 
+        let mut processing_flags = HashMap::new();
+        processing_flags.insert("air_temperature".to_string(), ProcessingFlag::ParseOk);
+        processing_flags.insert("humidity".to_string(), ProcessingFlag::ParseOk);
+        processing_flags.insert("station".to_string(), ProcessingFlag::StationFound);
+
         Observation {
             ob_end_time: Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
             ob_hour_count: 1,
@@ -565,6 +663,7 @@ mod tests {
             station,
             measurements,
             quality_flags,
+            processing_flags,
             meto_stmp_time: Utc.with_ymd_and_hms(2023, 6, 15, 13, 0, 0).unwrap(),
             midas_stmp_etime: 3600,
         }
@@ -872,5 +971,86 @@ mod tests {
         let flag_json = serde_json::to_string(&flag).unwrap();
         let flag_deserialized: QualityFlag = serde_json::from_str(&flag_json).unwrap();
         assert_eq!(flag, flag_deserialized);
+    }
+
+    mod processing_flag_tests {
+        use super::*;
+
+        #[test]
+        fn test_processing_flag_is_success() {
+            // Success flags
+            assert!(ProcessingFlag::ParseOk.is_success());
+            assert!(ProcessingFlag::MissingValue.is_success()); // Missing values are normal
+            assert!(ProcessingFlag::StationFound.is_success());
+            assert!(ProcessingFlag::Original.is_success());
+            assert!(ProcessingFlag::DuplicateResolved.is_success());
+
+            // Error flags
+            assert!(!ProcessingFlag::ParseFailed.is_success());
+            assert!(!ProcessingFlag::StationMissing.is_success());
+            assert!(!ProcessingFlag::Superseded.is_success());
+        }
+
+        #[test]
+        fn test_processing_flag_description() {
+            assert_eq!(
+                ProcessingFlag::ParseOk.description(),
+                "Successfully parsed and converted"
+            );
+            assert_eq!(
+                ProcessingFlag::ParseFailed.description(),
+                "Failed to parse value"
+            );
+            assert_eq!(
+                ProcessingFlag::StationMissing.description(),
+                "Station metadata missing, placeholder used"
+            );
+        }
+
+        #[test]
+        fn test_processing_flag_display() {
+            assert_eq!(format!("{}", ProcessingFlag::ParseOk), "ParseOk");
+            assert_eq!(
+                format!("{}", ProcessingFlag::StationMissing),
+                "StationMissing"
+            );
+        }
+
+        #[test]
+        fn test_observation_processing_flags() {
+            let mut observation = create_test_observation();
+
+            // Test getting processing flags
+            assert_eq!(
+                observation.get_processing_flag("air_temperature"),
+                Some(ProcessingFlag::ParseOk)
+            );
+            assert_eq!(
+                observation.get_processing_flag("station"),
+                Some(ProcessingFlag::StationFound)
+            );
+            assert_eq!(observation.get_processing_flag("nonexistent"), None);
+
+            // Test has_processing_errors (should be false initially with only success flags)
+            assert!(!observation.has_processing_errors()); // All success flags initially
+
+            // Test setting processing flags
+            observation.set_processing_flag("new_measurement".to_string(), ProcessingFlag::ParseOk);
+            assert_eq!(
+                observation.get_processing_flag("new_measurement"),
+                Some(ProcessingFlag::ParseOk)
+            );
+            assert!(!observation.has_processing_errors()); // Still no errors
+
+            // Add an error flag
+            observation.set_processing_flag("error_field".to_string(), ProcessingFlag::ParseFailed);
+            assert!(observation.has_processing_errors()); // Now has an error
+
+            // Test get_all_processing_flags
+            let all_flags = observation.get_all_processing_flags();
+            assert!(all_flags.contains_key("air_temperature"));
+            assert!(all_flags.contains_key("station"));
+            assert!(all_flags.contains_key("error_field"));
+        }
     }
 }
