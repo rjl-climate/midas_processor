@@ -57,6 +57,10 @@ pub struct ProcessingConfig {
     /// Output path for generated Parquet files
     pub output_path: PathBuf,
 
+    /// Cache path for storing downloaded and processed data
+    #[serde(default = "default_cache_path")]
+    pub cache_path: PathBuf,
+
     /// List of datasets to process
     #[serde(default = "default_datasets")]
     pub datasets: Vec<String>,
@@ -136,6 +140,23 @@ pub struct LoggingConfig {
 
 fn default_datasets() -> Vec<String> {
     DEFAULT_DATASETS.iter().map(|s| s.to_string()).collect()
+}
+
+fn default_cache_path() -> PathBuf {
+    // Default cache location: ~/Library/Application Support/midas-fetcher/cache
+    use directories::UserDirs;
+
+    if let Some(user_dirs) = UserDirs::new() {
+        user_dirs
+            .home_dir()
+            .join("Library")
+            .join("Application Support")
+            .join("midas-fetcher")
+            .join("cache")
+    } else {
+        // Fallback if home directory can't be determined
+        PathBuf::from("/tmp/midas-fetcher-cache")
+    }
 }
 
 fn default_include_suspect() -> bool {
@@ -232,6 +253,7 @@ impl Config {
             processing: ProcessingConfig {
                 input_path,
                 output_path,
+                cache_path: default_cache_path(),
                 datasets: default_datasets(),
                 dry_run: false,
                 force_overwrite: false,
@@ -268,24 +290,20 @@ impl Config {
         output_path: Option<PathBuf>,
         config_file: Option<&std::path::Path>,
     ) -> Result<Self> {
-        // Start with default configuration
-        let mut config = if let (Some(input), Some(output)) = (input_path, output_path) {
-            Self::new(input, output)
-        } else {
-            // If required paths not provided, they must be in config file
-            Self {
-                processing: ProcessingConfig {
-                    input_path: PathBuf::new(),
-                    output_path: PathBuf::new(),
-                    datasets: default_datasets(),
-                    dry_run: false,
-                    force_overwrite: false,
-                },
-                quality_control: QualityControlConfig::default(),
-                parquet: ParquetConfig::default(),
-                performance: PerformanceConfig::default(),
-                logging: LoggingConfig::default(),
-            }
+        // Start with smart default configuration
+        let mut config = Self {
+            processing: ProcessingConfig {
+                input_path: input_path.unwrap_or_else(default_cache_path),
+                output_path: output_path.unwrap_or_else(|| PathBuf::from("./output")),
+                cache_path: default_cache_path(),
+                datasets: default_datasets(),
+                dry_run: false,
+                force_overwrite: false,
+            },
+            quality_control: QualityControlConfig::default(),
+            parquet: ParquetConfig::default(),
+            performance: PerformanceConfig::default(),
+            logging: LoggingConfig::default(),
         };
 
         // Layer 1: Config file
@@ -316,6 +334,9 @@ impl Config {
         if !other.processing.output_path.as_os_str().is_empty() {
             self.processing.output_path = other.processing.output_path;
         }
+        if !other.processing.cache_path.as_os_str().is_empty() {
+            self.processing.cache_path = other.processing.cache_path;
+        }
         if !other.processing.datasets.is_empty() {
             self.processing.datasets = other.processing.datasets;
         }
@@ -339,6 +360,9 @@ impl Config {
         }
         if let Ok(output_path) = std::env::var("MIDAS_OUTPUT_PATH") {
             self.processing.output_path = PathBuf::from(output_path);
+        }
+        if let Ok(cache_path) = std::env::var("MIDAS_CACHE_PATH") {
+            self.processing.cache_path = PathBuf::from(cache_path);
         }
         if let Ok(datasets) = std::env::var("MIDAS_DATASETS") {
             self.processing.datasets = datasets.split(',').map(|s| s.trim().to_string()).collect();
@@ -379,6 +403,9 @@ impl Config {
         }
         if self.processing.output_path.as_os_str().is_empty() {
             return Err(Error::configuration("Output path is required".to_string()));
+        }
+        if self.processing.cache_path.as_os_str().is_empty() {
+            return Err(Error::configuration("Cache path is required".to_string()));
         }
 
         // Validate input path exists
@@ -477,6 +504,20 @@ impl Config {
                 Error::configuration(format!(
                     "Failed to create output directory '{}': {}",
                     self.processing.output_path.display(),
+                    e
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Create cache directory if it doesn't exist
+    pub fn ensure_cache_directory(&self) -> Result<()> {
+        if !self.processing.cache_path.exists() {
+            std::fs::create_dir_all(&self.processing.cache_path).map_err(|e| {
+                Error::configuration(format!(
+                    "Failed to create cache directory '{}': {}",
+                    self.processing.cache_path.display(),
                     e
                 ))
             })?;

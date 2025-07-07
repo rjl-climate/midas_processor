@@ -6,7 +6,6 @@
 use chrono::Utc;
 use csv::StringRecord;
 use std::collections::HashMap;
-use std::str::FromStr;
 use tracing::debug;
 
 use super::column_mapping::ColumnMapping;
@@ -15,7 +14,7 @@ use super::field_parsers::{
     parse_required_string,
 };
 use super::header::SimpleHeader;
-use crate::app::models::{Observation, QualityFlag};
+use crate::app::models::Observation;
 use crate::app::services::station_registry::StationRegistry;
 use crate::{Error, Result};
 
@@ -111,12 +110,12 @@ pub fn parse_measurements(
     measurements
 }
 
-/// Parse quality flags from _q suffixed columns
+/// Parse quality flags from _q suffixed columns (pass through raw CSV values)
 pub fn parse_quality_flags(
     record: &StringRecord,
     mapping: &ColumnMapping,
     missing_value: &str,
-) -> HashMap<String, QualityFlag> {
+) -> HashMap<String, String> {
     let mut quality_flags = HashMap::new();
 
     for column_name in &mapping.quality_columns {
@@ -124,29 +123,23 @@ pub fn parse_quality_flags(
             if let Some(value_str) = record.get(index) {
                 let trimmed = value_str.trim();
 
-                // Skip missing values
-                if trimmed == missing_value || trimmed.is_empty() {
-                    continue;
+                // Skip missing values (but store actual empty/missing values)
+                if trimmed == missing_value {
+                    // Store the missing value marker as-is for downstream processing
+                    let measurement_name = column_name
+                        .strip_suffix("_q")
+                        .unwrap_or(column_name)
+                        .to_string();
+                    quality_flags.insert(measurement_name, missing_value.to_string());
+                } else if !trimmed.is_empty() {
+                    // Store non-empty quality flag values as-is
+                    let measurement_name = column_name
+                        .strip_suffix("_q")
+                        .unwrap_or(column_name)
+                        .to_string();
+                    quality_flags.insert(measurement_name, trimmed.to_string());
                 }
-
-                // Extract measurement name by removing "_q" suffix
-                let measurement_name = column_name
-                    .strip_suffix("_q")
-                    .unwrap_or(column_name)
-                    .to_string();
-
-                // Parse quality flag using existing robust logic
-                match QualityFlag::from_str(trimmed) {
-                    Ok(flag) => {
-                        quality_flags.insert(measurement_name, flag);
-                    }
-                    Err(_) => {
-                        debug!(
-                            "Failed to parse quality flag '{}' = '{}'",
-                            column_name, trimmed
-                        );
-                    }
-                }
+                // Skip only truly empty values (empty strings)
             }
         }
     }

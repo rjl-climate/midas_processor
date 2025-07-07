@@ -79,7 +79,14 @@ impl BadcCsvParser {
         })
     }
 
-    /// Split file content into header and data sections
+    /// Split file content into header and data sections according to BADC-CSV specification
+    ///
+    /// BADC-CSV format structure:
+    /// - Header section (metadata lines)
+    /// - "data" marker line
+    /// - Column headers line
+    /// - Data records
+    /// - "end data" marker line
     fn split_sections(&self, content: &str) -> Result<(Vec<String>, Option<String>)> {
         let lines: Vec<&str> = content.lines().collect();
 
@@ -91,10 +98,33 @@ impl BadcCsvParser {
 
         let header_lines = lines[..data_start].iter().map(|s| s.to_string()).collect();
 
-        // Check if there's content after the data marker
+        // Find "end data" marker
+        let data_end = lines.iter().position(|line| line.trim() == "end data");
+
+        // Extract data section content between markers
         if data_start + 1 < lines.len() {
-            let data_content = lines[data_start + 1..].join("\n");
-            Ok((header_lines, Some(data_content)))
+            let data_section_end = match data_end {
+                Some(end_pos) if end_pos > data_start => end_pos,
+                Some(_) => {
+                    return Err(Error::file_format(
+                        "'end data' marker appears before 'data' marker in BADC-CSV file",
+                    ));
+                }
+                None => {
+                    warn!(
+                        "No 'end data' marker found - processing entire remainder as data section"
+                    );
+                    lines.len()
+                }
+            };
+
+            // Extract content between "data" and "end data" markers
+            if data_start + 1 < data_section_end {
+                let data_content = lines[data_start + 1..data_section_end].join("\n");
+                Ok((header_lines, Some(data_content)))
+            } else {
+                Ok((header_lines, None))
+            }
         } else {
             Ok((header_lines, None))
         }
@@ -124,20 +154,12 @@ impl BadcCsvParser {
             total_cols, measurement_cols, quality_cols
         );
 
-        // Parse data records
+        // Parse data records (excluding "end data" marker which was filtered out in split_sections)
         for result in csv_reader.records() {
             stats.total_records += 1;
 
             match result {
                 Ok(record) => {
-                    // Skip "end data" line and other section markers
-                    if let Some(first_field) = record.get(0) {
-                        if first_field.trim().starts_with("end") {
-                            stats.records_skipped += 1;
-                            continue;
-                        }
-                    }
-
                     match parse_observation_record(
                         &record,
                         &column_mapping,

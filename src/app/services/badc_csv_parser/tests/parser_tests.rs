@@ -110,3 +110,242 @@ fn test_minimal_file_structure() {
     assert_eq!(header.missing_value, "NA");
     assert_eq!(header.title, None);
 }
+
+/// Demonstration test showing BadcCsvParser output with a real MIDAS observation file
+///
+/// This test is ignored by default as it requires access to real MIDAS data files.
+/// Run with: `cargo test test_demonstrate_real_parser_output -- --ignored`
+///
+/// Purpose:
+/// - Demonstrate the parser working with actual MIDAS observation data
+/// - Show how the parser handles real-world data quality issues
+/// - Provide debugging output for understanding parser behavior
+/// - Validate integration with station registry using real data
+#[tokio::test]
+#[ignore] // Ignored because it requires real data files and is for demonstration
+async fn test_demonstrate_real_parser_output() {
+    use super::super::super::station_registry::StationRegistry;
+    use super::super::BadcCsvParser;
+    use std::path::Path;
+
+    // Real MIDAS observation file path
+    let real_file_path = Path::new(
+        "/Users/richardlyon/Library/Application Support/midas-fetcher/cache/uk-daily-temperature-obs/qcv-1/aberdeenshire/00144_corgarff-castle-lodge/midas-open_uk-daily-temperature-obs_dv-202507_aberdeenshire_00144_corgarff-castle-lodge_qcv-1_1994.csv",
+    );
+
+    // Skip test if file doesn't exist (e.g., in CI environments)
+    if !real_file_path.exists() {
+        println!(
+            "⚠️  Skipping demonstration test - real MIDAS file not found at: {}",
+            real_file_path.display()
+        );
+        println!("   This is expected in CI environments or different machine setups.");
+        return;
+    }
+
+    println!("🔍 BADC CSV Parser Demonstration with Real MIDAS Data");
+    println!("=====================================================");
+    println!("📁 File: {}", real_file_path.display());
+    println!();
+
+    // Load real station registry from cache
+    let cache_path =
+        Path::new("/Users/richardlyon/Library/Application Support/midas-fetcher/cache");
+    if !cache_path.exists() {
+        println!(
+            "⚠️  Skipping demonstration test - MIDAS cache not found at: {}",
+            cache_path.display()
+        );
+        return;
+    }
+
+    println!("📦 Loading station registry from real MIDAS cache...");
+    let datasets = vec!["uk-daily-temperature-obs".to_string()];
+
+    let (registry, load_stats) =
+        match StationRegistry::load_from_cache(cache_path, &datasets, false).await {
+            Ok((registry, stats)) => (registry, stats),
+            Err(e) => {
+                println!("❌ Failed to load station registry: {}", e);
+                return;
+            }
+        };
+
+    println!("✅ Station registry loaded successfully:");
+    println!("   • {} stations loaded", registry.station_count());
+    println!("   • {} files processed", load_stats.files_processed);
+    println!(
+        "   • Load time: {:.2}s",
+        load_stats.load_duration.as_secs_f64()
+    );
+    println!();
+
+    // Create parser with real station registry
+    let parser = BadcCsvParser::new(std::sync::Arc::new(registry));
+
+    println!("🔄 Parsing real MIDAS observation file...");
+    let start_time = std::time::Instant::now();
+
+    let result = match parser.parse_file(real_file_path).await {
+        Ok(result) => result,
+        Err(e) => {
+            println!("❌ Failed to parse file: {}", e);
+            return;
+        }
+    };
+
+    let parse_duration = start_time.elapsed();
+
+    println!(
+        "✅ Parsing completed in {:.3}s",
+        parse_duration.as_secs_f64()
+    );
+    println!();
+
+    // Display parsing statistics
+    println!("📊 Parsing Statistics:");
+    println!(
+        "   • Total records processed: {}",
+        result.stats.total_records
+    );
+    println!(
+        "   • Observations parsed: {}",
+        result.stats.observations_parsed
+    );
+    println!("   • Records skipped: {}", result.stats.records_skipped);
+    println!("   • Parse errors: {}", result.stats.errors.len());
+    println!("   • Success rate: {:.1}%", result.stats.success_rate());
+    println!(
+        "   • Overall success: {}",
+        if result.stats.is_successful() {
+            "✅ Yes"
+        } else {
+            "❌ No"
+        }
+    );
+    println!();
+
+    // Show first few errors if any
+    if !result.stats.errors.is_empty() {
+        println!("⚠️  Sample parse errors (first 3):");
+        for error in result.stats.errors.iter().take(3) {
+            println!("   • {}", error);
+        }
+        println!();
+    }
+
+    // Display information about parsed observations
+    if result.observations.is_empty() {
+        println!("⚠️  No observations were successfully parsed.");
+        println!("   This could be due to:");
+        println!("   • Station not found in registry");
+        println!("   • All data values are missing (NA)");
+        println!("   • Data quality issues");
+        return;
+    }
+
+    println!(
+        "🌡️  Successfully Parsed Observations: {}",
+        result.observations.len()
+    );
+    println!();
+
+    // Show station information from first observation
+    let first_obs = &result.observations[0];
+    println!("🏭 Station Information:");
+    println!("   • Station ID: {}", first_obs.station.src_id);
+    println!("   • Station Name: {}", first_obs.station.src_name);
+    println!(
+        "   • Location: {:.4}°N, {:.4}°E",
+        first_obs.station.high_prcn_lat, first_obs.station.high_prcn_lon
+    );
+    println!("   • Elevation: {:.1}m", first_obs.station.height_meters);
+    println!("   • County: {}", first_obs.station.historic_county);
+    println!("   • Authority: {}", first_obs.station.authority);
+    println!(
+        "   • Active Period: {} to {}",
+        first_obs.station.src_bgn_date.format("%Y-%m-%d"),
+        first_obs.station.src_end_date.format("%Y-%m-%d")
+    );
+    println!();
+
+    // Analyze measurement types and quality flags
+    let mut all_measurements = std::collections::HashSet::new();
+    let mut all_quality_flags = std::collections::HashSet::new();
+    let mut quality_flag_counts = std::collections::HashMap::new();
+
+    for obs in &result.observations {
+        for measurement_name in obs.measurements.keys() {
+            all_measurements.insert(measurement_name.clone());
+        }
+        for quality_name in obs.quality_flags.keys() {
+            all_quality_flags.insert(quality_name.clone());
+        }
+        for quality_flag in obs.quality_flags.values() {
+            *quality_flag_counts.entry(quality_flag.clone()).or_insert(0) += 1;
+        }
+    }
+
+    println!(
+        "📈 Measurement Types Found ({} types):",
+        all_measurements.len()
+    );
+    for measurement in &all_measurements {
+        println!("   • {}", measurement);
+    }
+    println!();
+
+    println!("🎯 Quality Flag Distribution:");
+    for (flag, count) in &quality_flag_counts {
+        println!("   • {}: {} occurrences", flag, count);
+    }
+    println!();
+
+    // Show sample observations with data
+    println!("📋 Sample Observations with Actual Data:");
+    let mut shown_count = 0;
+    for obs in &result.observations {
+        if !obs.measurements.is_empty() && shown_count < 5 {
+            println!("   🕒 {}", obs.ob_end_time.format("%Y-%m-%d %H:%M:%S"));
+            println!("      • Observation ID: {}", obs.observation_id);
+            println!("      • Hour Count: {} hours", obs.ob_hour_count);
+
+            // Show measurements
+            if !obs.measurements.is_empty() {
+                println!("      • Measurements:");
+                for (name, value) in &obs.measurements {
+                    let quality = obs
+                        .quality_flags
+                        .get(name)
+                        .map(|q| format!(" (Quality: {})", q))
+                        .unwrap_or_default();
+                    println!("        - {}: {:.1}°C{}", name, value, quality);
+                }
+            }
+
+            println!();
+            shown_count += 1;
+        }
+    }
+
+    if shown_count == 0 {
+        println!("   ℹ️  All observations have missing data (NA values)");
+        println!("      This is common in real MIDAS data due to equipment issues or maintenance");
+        println!();
+
+        // Show a few sample observations even without measurements
+        println!("📋 Sample Observations (structure only):");
+        for obs in result.observations.iter().take(3) {
+            println!("   🕒 {}", obs.ob_end_time.format("%Y-%m-%d %H:%M:%S"));
+            println!(
+                "      • ID: {}, Hours: {}, Station: {}",
+                obs.observation_id, obs.ob_hour_count, obs.station_id
+            );
+        }
+    }
+
+    println!();
+    println!("✨ Demonstration completed successfully!");
+    println!("   This shows the BadcCsvParser working with real MIDAS observation data,");
+    println!("   handling missing values, quality flags, and station metadata integration.");
+}

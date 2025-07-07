@@ -20,7 +20,6 @@ pub mod app {
     pub mod services {
         pub mod badc_csv_parser;
         pub mod parquet_writer;
-        pub mod progress;
         pub mod record_processor;
         pub mod station_registry;
     }

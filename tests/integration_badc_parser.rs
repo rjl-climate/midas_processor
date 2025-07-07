@@ -272,13 +272,13 @@ async fn test_real_data_quality_scenarios() {
     for obs in &result.observations {
         // Count quality flag distributions
         for flag in obs.quality_flags.values() {
-            *quality_flag_counts.entry(*flag).or_insert(0) += 1;
+            *quality_flag_counts.entry(flag.clone()).or_insert(0) += 1;
         }
     }
 
     println!("  Quality flag distribution:");
     for (flag, count) in quality_flag_counts {
-        println!("    {:?}: {}", flag, count);
+        println!("    {}: {}", flag, count);
     }
 
     // Real MIDAS data often has various quality flag values

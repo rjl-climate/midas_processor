@@ -92,7 +92,8 @@ pub fn create_minimal_badc_csv() -> String {
 missing_value,G,NA
 data
 ob_end_time,id,src_id,id_type,met_domain_name,rec_st_ind,version_num,ob_hour_count
-2023-01-01 09:00:00,123,1001,SRCE,TEST-OBS,1001,1,24"#
+2023-01-01 09:00:00,123,1001,SRCE,TEST-OBS,1001,1,24
+end data"#
         .to_string()
 }
 
