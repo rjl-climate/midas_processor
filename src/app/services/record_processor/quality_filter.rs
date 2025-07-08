@@ -7,6 +7,7 @@
 
 use crate::app::models::{Observation, ProcessingFlag};
 use crate::config::QualityControlConfig;
+use indicatif::ProgressBar;
 use tracing::{debug, info};
 
 use super::stats::ProcessingStats;
@@ -21,6 +22,7 @@ use super::stats::ProcessingStats;
 /// * `observations` - Input observations to filter
 /// * `quality_config` - Quality control configuration (for processing requirements only)
 /// * `stats` - Mutable reference to processing statistics
+/// * `progress_bar` - Optional progress bar for tracking progress
 ///
 /// # Returns
 ///
@@ -29,15 +31,34 @@ pub fn apply_processing_filters(
     observations: Vec<Observation>,
     quality_config: &QualityControlConfig,
     stats: &mut ProcessingStats,
+    progress_bar: Option<&ProgressBar>,
 ) -> Vec<Observation> {
     let mut filtered = Vec::new();
     let mut filtered_out = 0;
+    let total_observations = observations.len();
 
-    for observation in observations {
+    for (index, observation) in observations.into_iter().enumerate() {
+        // Update progress bar
+        if let Some(pb) = progress_bar {
+            pb.set_position(index as u64);
+            if index % 1000 == 0 || index == total_observations - 1 {
+                pb.set_message(format!(
+                    "Filtering observation {} of {}",
+                    index + 1,
+                    total_observations
+                ));
+            }
+        }
+
         if passes_processing_filters(&observation, quality_config, stats) {
             filtered.push(observation);
         } else {
             filtered_out += 1;
+        }
+
+        // Increment progress
+        if let Some(pb) = progress_bar {
+            pb.inc(1);
         }
     }
 

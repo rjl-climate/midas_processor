@@ -21,8 +21,8 @@ pub async fn create_dataset_writer(
     output_dir: &Path,
     config: WriterConfig,
 ) -> Result<ParquetWriter> {
-    let filename = format!("{}.parquet", dataset_name);
-    let output_path = output_dir.join("parquet_files").join(filename);
+    let filename = create_versioned_filename(dataset_name);
+    let output_path = output_dir.join(filename);
 
     info!(
         "Creating dataset writer for {} -> {}",
@@ -30,7 +30,7 @@ pub async fn create_dataset_writer(
         output_path.display()
     );
 
-    ParquetWriter::new(&output_path, config).await
+    ParquetWriter::new_with_dataset(&output_path, config, Some(dataset_name)).await
 }
 
 /// Write observations for a complete dataset with progress reporting
@@ -84,8 +84,22 @@ pub async fn write_multiple_datasets_to_parquet(
 
 /// Create a standardized Parquet file path for a dataset
 pub fn create_dataset_output_path(dataset_name: &str, output_dir: &Path) -> std::path::PathBuf {
-    let filename = format!("{}.parquet", sanitize_filename(dataset_name));
-    output_dir.join("parquet_files").join(filename)
+    let filename = create_versioned_filename(dataset_name);
+    output_dir.join(filename)
+}
+
+/// Generate current YYYYMM version string for file naming
+pub fn get_current_version() -> String {
+    let now = chrono::Utc::now();
+    now.format("%Y%m").to_string()
+}
+
+/// Create versioned filename for a dataset
+/// Returns filename in format: {dataset}_{YYYYMM}.parquet
+pub fn create_versioned_filename(dataset_name: &str) -> String {
+    let sanitized = sanitize_filename(dataset_name);
+    let version = get_current_version();
+    format!("{}_{}.parquet", sanitized, version)
 }
 
 /// Sanitize a dataset name for use as a filename
@@ -106,20 +120,6 @@ pub async fn validate_output_directory(output_dir: &Path) -> Result<()> {
                 format!(
                     "Failed to create output directory: {}",
                     output_dir.display()
-                ),
-                e,
-            )
-        })?;
-    }
-
-    // Create parquet_files subdirectory if it doesn't exist
-    let parquet_dir = output_dir.join("parquet_files");
-    if !parquet_dir.exists() {
-        tokio::fs::create_dir_all(&parquet_dir).await.map_err(|e| {
-            Error::io(
-                format!(
-                    "Failed to create parquet files directory: {}",
-                    parquet_dir.display()
                 ),
                 e,
             )
@@ -443,10 +443,8 @@ mod tests {
         assert!(writer.is_ok());
 
         let writer = writer.unwrap();
-        let expected_path = temp_dir
-            .path()
-            .join("parquet_files")
-            .join("test-dataset.parquet");
+        let expected_filename = create_versioned_filename("test-dataset");
+        let expected_path = temp_dir.path().join(expected_filename);
         assert_eq!(writer.output_path(), &expected_path);
     }
 
@@ -465,10 +463,8 @@ mod tests {
         assert_eq!(stats.observations_written, 5);
         assert_eq!(stats.batches_written, 1);
 
-        let output_file = temp_dir
-            .path()
-            .join("parquet_files")
-            .join("test-dataset.parquet");
+        let expected_filename = create_versioned_filename("test-dataset");
+        let output_file = temp_dir.path().join(expected_filename);
         assert!(output_file.exists());
     }
 
@@ -493,29 +489,56 @@ mod tests {
         assert_eq!(results[1].1.observations_written, 7);
 
         // Check files exist
-        let file1 = temp_dir
-            .path()
-            .join("parquet_files")
-            .join("dataset1.parquet");
-        let file2 = temp_dir
-            .path()
-            .join("parquet_files")
-            .join("dataset2.parquet");
+        let filename1 = create_versioned_filename("dataset1");
+        let filename2 = create_versioned_filename("dataset2");
+        let file1 = temp_dir.path().join(filename1);
+        let file2 = temp_dir.path().join(filename2);
         assert!(file1.exists());
         assert!(file2.exists());
     }
 
-    /// Test standardized path generation for dataset Parquet files
-    /// Validates consistent file organization within parquet_files subdirectory
+    /// Test standardized path generation for dataset Parquet files with versioning
+    /// Validates consistent file organization with YYYYMM version suffixes
     #[test]
     fn test_create_dataset_output_path() {
         let output_dir = std::path::Path::new("/test/output");
         let path = create_dataset_output_path("my-dataset", output_dir);
 
-        assert_eq!(
-            path,
-            output_dir.join("parquet_files").join("my-dataset.parquet")
-        );
+        let expected_filename = create_versioned_filename("my-dataset");
+        let expected_path = output_dir.join(expected_filename);
+        assert_eq!(path, expected_path);
+
+        // Verify the filename includes the version
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("my-dataset_"));
+        assert!(filename.ends_with(".parquet"));
+        assert_eq!(filename.len(), "my-dataset_202XXX.parquet".len());
+    }
+
+    /// Test versioned filename generation with YYYYMM format
+    /// Validates consistent naming with current date version suffixes
+    #[test]
+    fn test_create_versioned_filename() {
+        let filename = create_versioned_filename("uk-daily-temperature-obs");
+
+        // Should have sanitized name + underscore + YYYYMM + .parquet
+        assert!(filename.starts_with("uk-daily-temperature-obs_"));
+        assert!(filename.ends_with(".parquet"));
+
+        // Version should be 6 digits (YYYYMM)
+        // Extract version from the last part after the final underscore
+        let parts: Vec<&str> = filename.rsplitn(2, '_').collect();
+        assert_eq!(parts.len(), 2); // {version}.parquet, everything_before_last_underscore
+
+        let version_part = parts[0]; // First part is {version}.parquet
+        let version = version_part.replace(".parquet", "");
+        assert_eq!(version.len(), 6);
+        assert!(version.chars().all(|c| c.is_ascii_digit()));
+
+        // Should be current year and month
+        let current = chrono::Utc::now();
+        let expected_version = current.format("%Y%m").to_string();
+        assert_eq!(version, expected_version);
     }
 
     /// Test filename sanitization prevents filesystem compatibility issues
@@ -531,18 +554,17 @@ mod tests {
         assert_eq!(sanitize_filename("spaces and tabs"), "spaces_and_tabs");
     }
 
-    /// Test output directory validation creates required subdirectories
+    /// Test output directory validation creates required directories
     /// Ensures filesystem readiness and write permissions before processing
     #[tokio::test]
     async fn test_validate_output_directory() {
         let temp_dir = TempDir::new().unwrap();
         let output_dir = temp_dir.path().join("new_output");
 
-        // Should create directory and subdirectories
+        // Should create directory
         validate_output_directory(&output_dir).await.unwrap();
 
         assert!(output_dir.exists());
-        assert!(output_dir.join("parquet_files").exists());
 
         // Should work on existing directory
         validate_output_directory(&output_dir).await.unwrap();

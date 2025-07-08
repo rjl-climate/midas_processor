@@ -4,6 +4,8 @@
 //! and error handling for the CLI interface. Each command is implemented in
 //! its own module for better organization and maintainability.
 
+pub mod observation_stream;
+pub mod parallel_processor;
 pub mod process;
 pub mod shared;
 pub mod stations;

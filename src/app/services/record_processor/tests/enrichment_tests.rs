@@ -19,7 +19,8 @@ async fn test_re_enrich_station_metadata_with_good_stations() {
         create_observation_with_good_station("obs3", 125),
     ];
 
-    let result = re_enrich_station_metadata(observations, &station_registry, &mut stats).await;
+    let result =
+        re_enrich_station_metadata(observations, &station_registry, &mut stats, None).await;
 
     assert!(result.is_ok());
     let enriched = result.unwrap();
@@ -46,7 +47,8 @@ async fn test_re_enrich_station_metadata_with_missing_stations() {
         create_observation_with_missing_station("obs2", 998),
     ];
 
-    let result = re_enrich_station_metadata(observations, &station_registry, &mut stats).await;
+    let result =
+        re_enrich_station_metadata(observations, &station_registry, &mut stats, None).await;
 
     assert!(result.is_ok());
     let enriched = result.unwrap();
@@ -74,7 +76,8 @@ async fn test_re_enrich_station_metadata_mixed_scenarios() {
         create_observation_with_missing_station("obs4", 998),
     ];
 
-    let result = re_enrich_station_metadata(observations, &station_registry, &mut stats).await;
+    let result =
+        re_enrich_station_metadata(observations, &station_registry, &mut stats, None).await;
 
     assert!(result.is_ok());
     let enriched = result.unwrap();
@@ -280,7 +283,8 @@ async fn test_re_enrich_station_metadata_error_handling() {
 
     // Test that even with a "failed" lookup, the function continues processing
     let observations = vec![observation];
-    let result = re_enrich_station_metadata(observations, &station_registry, &mut stats).await;
+    let result =
+        re_enrich_station_metadata(observations, &station_registry, &mut stats, None).await;
 
     assert!(result.is_ok());
     let enriched = result.unwrap();
@@ -314,7 +318,8 @@ async fn test_re_enrich_station_metadata_preserves_other_flags() {
         processing_flags,
     )];
 
-    let result = re_enrich_station_metadata(observations, &station_registry, &mut stats).await;
+    let result =
+        re_enrich_station_metadata(observations, &station_registry, &mut stats, None).await;
 
     assert!(result.is_ok());
     let enriched = result.unwrap();

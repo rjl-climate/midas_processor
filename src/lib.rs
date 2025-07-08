@@ -34,6 +34,7 @@ pub mod app {
 pub mod cli {
     pub mod args;
     pub mod commands;
+    pub mod input;
 }
 
 // Re-export commonly used types

@@ -3,7 +3,10 @@
 //! This module provides configuration structures and statistics tracking for
 //! optimized Parquet file generation with MIDAS weather data.
 
-use crate::constants::{PARQUET_ROW_GROUP_SIZE, PARQUET_WRITE_BATCH_SIZE};
+use crate::constants::{
+    PARQUET_MEMORY_LIMIT_BYTES, PARQUET_PAGE_SIZE_MB, PARQUET_ROW_GROUP_SIZE,
+    PARQUET_WRITE_BATCH_SIZE,
+};
 use parquet::basic::Compression;
 
 /// Configuration for Parquet writer optimization
@@ -47,10 +50,10 @@ impl Default for WriterConfig {
             row_group_size: PARQUET_ROW_GROUP_SIZE,
             compression: Compression::SNAPPY,
             write_batch_size: PARQUET_WRITE_BATCH_SIZE,
-            memory_limit_bytes: 100 * 1024 * 1024, // 100MB
+            memory_limit_bytes: PARQUET_MEMORY_LIMIT_BYTES,
             enable_dictionary_encoding: true,
             enable_statistics: true,
-            data_page_size_bytes: 1024 * 1024, // 1MB
+            data_page_size_bytes: PARQUET_PAGE_SIZE_MB * 1024 * 1024,
         }
     }
 }

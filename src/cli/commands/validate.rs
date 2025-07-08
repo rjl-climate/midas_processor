@@ -290,6 +290,6 @@ mod tests {
     #[test]
     fn test_module_compiles() {
         // Basic test to ensure the module compiles correctly
-        assert!(true);
+        // This test validates that all imports and module structure are correct
     }
 }

@@ -7,6 +7,7 @@
 use crate::Result;
 use crate::app::models::{Observation, ProcessingFlag};
 use crate::app::services::station_registry::StationRegistry;
+use indicatif::ProgressBar;
 use tracing::debug;
 
 use super::stats::ProcessingStats;
@@ -22,6 +23,7 @@ use super::stats::ProcessingStats;
 /// * `observations` - Input observations to re-enrich
 /// * `station_registry` - Registry for station metadata lookups
 /// * `stats` - Mutable reference to processing statistics
+/// * `progress_bar` - Optional progress bar for tracking progress
 ///
 /// # Returns
 ///
@@ -30,10 +32,23 @@ pub async fn re_enrich_station_metadata(
     observations: Vec<Observation>,
     station_registry: &StationRegistry,
     stats: &mut ProcessingStats,
+    progress_bar: Option<&ProgressBar>,
 ) -> Result<Vec<Observation>> {
     let mut enriched = Vec::with_capacity(observations.len());
 
-    for mut observation in observations {
+    for (index, mut observation) in observations.into_iter().enumerate() {
+        // Update progress bar
+        if let Some(pb) = progress_bar {
+            pb.set_position(index as u64);
+            if index % 1000 == 0 || index == enriched.capacity() - 1 {
+                pb.set_message(format!(
+                    "Enriching observation {} of {}",
+                    index + 1,
+                    enriched.capacity()
+                ));
+            }
+        }
+
         match re_enrich_single_observation(&mut observation, station_registry).await {
             Ok(()) => {
                 enriched.push(observation);
@@ -48,6 +63,11 @@ pub async fn re_enrich_station_metadata(
                 // Continue processing with original observation
                 enriched.push(observation);
             }
+        }
+
+        // Increment progress
+        if let Some(pb) = progress_bar {
+            pb.inc(1);
         }
     }
 

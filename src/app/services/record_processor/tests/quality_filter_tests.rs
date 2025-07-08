@@ -18,7 +18,7 @@ fn test_apply_processing_filters_permissive_config() {
         create_observation_with_parse_failures("obs3", 124),
     ];
 
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // Permissive config should pass observations without critical errors
     // obs1 (good station) and obs2 (missing station) pass, but obs3 (parse failures) fails due to critical errors
@@ -37,7 +37,7 @@ fn test_apply_processing_filters_strict_config() {
         create_observation_with_parse_failures("obs3", 124),
     ];
 
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // Strict config filters out observations with missing stations or parse failures
     // Only observations with good station metadata and no parse failures pass
@@ -54,7 +54,7 @@ fn test_apply_processing_filters_empty_input() {
     let config = create_test_quality_config();
 
     let observations: Vec<Observation> = vec![];
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     assert_eq!(result.len(), 0);
     assert_eq!(stats.errors, 0);
@@ -71,7 +71,7 @@ fn test_apply_processing_filters_all_good_observations() {
         create_observation_with_good_station("obs3", 125),
     ];
 
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // All observations should pass
     assert_eq!(result.len(), 3);
@@ -89,7 +89,7 @@ fn test_apply_processing_filters_all_bad_observations() {
         create_observation_with_missing_station("obs3", 997),
     ];
 
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // Strict config filters out all observations with processing issues
     // Missing stations and parse failures are excluded
@@ -255,7 +255,7 @@ fn test_quality_filtering_preserves_good_observations() {
     good_obs.set_processing_flag("custom_check".to_string(), ProcessingFlag::ParseOk);
 
     let observations = vec![good_obs.clone()];
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     assert_eq!(result.len(), 1);
 
@@ -280,7 +280,7 @@ fn test_quality_filtering_with_mixed_processing_flags() {
     mixed_obs.set_processing_flag("measurement3".to_string(), ProcessingFlag::MissingValue);
 
     let observations = vec![mixed_obs];
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // The behavior depends on the implementation - test what actually happens
     // This documents the current behavior for mixed processing flags
@@ -308,8 +308,10 @@ fn test_processing_filtering_respects_configuration() {
         create_observation_with_parse_failures("obs2", 998),
     ];
 
-    let strict_result = apply_processing_filters(observations.clone(), &strict_config, &mut stats);
-    let permissive_result = apply_processing_filters(observations, &permissive_config, &mut stats);
+    let strict_result =
+        apply_processing_filters(observations.clone(), &strict_config, &mut stats, None);
+    let permissive_result =
+        apply_processing_filters(observations, &permissive_config, &mut stats, None);
 
     // Permissive config should pass more observations than strict config
     assert!(permissive_result.len() >= strict_result.len());
@@ -330,7 +332,7 @@ fn test_processing_filtering_preserves_midas_quality_indicators() {
 
     let config = create_test_quality_config();
 
-    let result = apply_processing_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats, None);
 
     // ALL MIDAS quality indicators should be preserved - no filtering on version_num
     assert_eq!(result.len(), 2);
@@ -353,7 +355,7 @@ fn test_processing_filtering_edge_cases() {
         HashMap::new(),
     );
 
-    let result = apply_processing_filters(vec![no_flags_obs], &config, &mut stats);
+    let result = apply_processing_filters(vec![no_flags_obs], &config, &mut stats, None);
 
     // Should pass - no processing errors
     assert_eq!(result.len(), 1);
@@ -362,7 +364,7 @@ fn test_processing_filtering_edge_cases() {
     let mut empty_measurements_obs = create_observation_with_good_station("obs2", 124);
     empty_measurements_obs.measurements.clear();
 
-    let result2 = apply_processing_filters(vec![empty_measurements_obs], &config, &mut stats);
+    let result2 = apply_processing_filters(vec![empty_measurements_obs], &config, &mut stats, None);
 
     // Should be filtered out due to empty measurements (processing failure indicator)
     assert_eq!(result2.len(), 0);

@@ -12,13 +12,33 @@ fn main() {
         process::exit(0);
     }
 
-    // Create async runtime and run the main command logic
+    // Create async runtime and run the main command logic with signal handling
     let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
         eprintln!("Failed to create async runtime: {}", e);
         process::exit(1);
     });
 
-    let result = runtime.block_on(commands::run(args));
+    let result = runtime.block_on(async {
+        // Set up graceful shutdown handling
+        let shutdown_signal = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install CTRL+C signal handler");
+        };
+
+        // Run the main command with cancellation support
+        tokio::select! {
+            result = commands::run(args) => {
+                result
+            }
+            _ = shutdown_signal => {
+                eprintln!("\nReceived CTRL+C, shutting down gracefully...");
+                Err(midas_processor::Error::processing_interrupted(
+                    "Processing interrupted by user".to_string()
+                ))
+            }
+        }
+    });
 
     match result {
         Ok(_stats) => {

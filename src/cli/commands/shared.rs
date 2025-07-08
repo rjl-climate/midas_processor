@@ -203,6 +203,9 @@ pub fn apply_cli_overrides(config: &mut Config, args: &ProcessArgs) -> Result<()
     if let Some(cache_path) = &args.cache_path {
         config.processing.cache_path = cache_path.clone();
     }
+    if let Some(parquet_output_path) = &args.parquet_output_path {
+        config.processing.parquet_output_path = Some(parquet_output_path.clone());
+    }
 
     // Override processing settings
     config.processing.datasets = args.get_datasets();
@@ -378,7 +381,7 @@ pub fn create_progress_bar(total: u64, message: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg} [{per_sec}] ETA: {eta}")
             .unwrap()
             .progress_chars("#>-"),
     );

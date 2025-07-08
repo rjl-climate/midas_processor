@@ -70,15 +70,39 @@ pub fn create_weather_schema() -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-/// Extend schema with dynamic measurement and quality flag fields
+/// Extend schema with measurement and quality flag fields
 ///
-/// This function analyzes the provided observations to identify all unique
-/// measurement types and creates corresponding columns with proper data types.
+/// This function creates measurement fields either from pre-defined schemas (if dataset_name
+/// is provided) or by analyzing observations dynamically. Pre-defined schemas enable
+/// streaming-compatible processing by avoiding the need to scan all observations first.
 pub fn extend_schema_with_measurements(
     base_schema: SchemaRef,
     observations: &[Observation],
 ) -> Result<SchemaRef> {
+    extend_schema_with_measurements_for_dataset(base_schema, observations, None)
+}
+
+/// Extend schema with measurement fields for a specific dataset
+///
+/// This function creates measurement fields by dynamically discovering them from
+/// actual observations, ensuring the schema matches exactly what's in the CSV data.
+/// This enables full adaptability to any dataset structure without hardcoded dependencies.
+pub fn extend_schema_with_measurements_for_dataset(
+    base_schema: SchemaRef,
+    observations: &[Observation],
+    dataset_name: Option<&str>,
+) -> Result<SchemaRef> {
     let mut additional_fields: Vec<Arc<Field>> = Vec::new();
+
+    // Always use dynamic discovery to match actual CSV data structure
+    debug!(
+        "Building schema dynamically from {} observations{}",
+        observations.len(),
+        dataset_name
+            .map(|name| format!(" for dataset '{}'", name))
+            .unwrap_or_default()
+    );
+
     let measurement_names = collect_measurement_names(observations);
 
     // Sort measurement names for consistent schema ordering
@@ -86,7 +110,7 @@ pub fn extend_schema_with_measurements(
     sorted_measurements.sort();
 
     debug!(
-        "Found {} dynamic measurement fields",
+        "Creating schema with {} measurement fields",
         sorted_measurements.len()
     );
 
@@ -542,5 +566,57 @@ mod tests {
         stats.quality_flag_fields = 0;
         assert!(!stats.has_measurements());
         assert_eq!(stats.dynamic_field_percentage(), 0.0);
+    }
+
+    /// Test dynamic schema generation for different dataset names
+    /// Validates that schema generation now uses dynamic discovery for all datasets
+    #[test]
+    fn test_dynamic_schema_generation_for_all_datasets() {
+        let base_schema = create_weather_schema();
+        let observations = vec![create_test_observation()];
+
+        // Test dynamic schema generation without dataset name
+        let schema_without_name =
+            extend_schema_with_measurements_for_dataset(base_schema.clone(), &observations, None)
+                .unwrap();
+
+        // Test dynamic schema generation with dataset name (should behave identically)
+        let schema_with_name = extend_schema_with_measurements_for_dataset(
+            base_schema.clone(),
+            &observations,
+            Some("uk-daily-temperature-obs"),
+        )
+        .unwrap();
+
+        // Both schemas should have the same number of fields since both use dynamic discovery
+        let fields_without_name = schema_without_name.fields().len();
+        let fields_with_name = schema_with_name.fields().len();
+
+        assert_eq!(
+            fields_without_name, fields_with_name,
+            "Dynamic schema should have same fields ({}) regardless of dataset name ({})",
+            fields_without_name, fields_with_name
+        );
+
+        // Both schemas should include the test observation's measurement fields
+        let field_names_without: std::collections::HashSet<String> = schema_without_name
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        let field_names_with: std::collections::HashSet<String> = schema_with_name
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+
+        // Field sets should be identical
+        assert_eq!(field_names_without, field_names_with);
+
+        // The test observation has air_temperature and wind_speed
+        assert!(field_names_without.contains("air_temperature"));
+        assert!(field_names_without.contains("q_air_temperature"));
+        assert!(field_names_without.contains("wind_speed"));
+        assert!(field_names_without.contains("q_wind_speed"));
     }
 }

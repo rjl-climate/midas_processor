@@ -60,6 +60,11 @@ pub struct ProcessingConfig {
     #[serde(default = "default_cache_path")]
     pub cache_path: PathBuf,
 
+    /// Custom output path for Parquet files specifically
+    /// If not specified, defaults to 'parquet' folder within input_path
+    #[serde(default)]
+    pub parquet_output_path: Option<PathBuf>,
+
     /// List of datasets to process
     #[serde(default = "default_datasets")]
     pub datasets: Vec<String>,
@@ -247,6 +252,7 @@ impl Config {
                 input_path,
                 output_path,
                 cache_path: default_cache_path(),
+                parquet_output_path: None,
                 datasets: default_datasets(),
                 dry_run: false,
                 force_overwrite: false,
@@ -289,6 +295,7 @@ impl Config {
                 input_path: input_path.unwrap_or_else(default_cache_path),
                 output_path: output_path.unwrap_or_else(|| PathBuf::from("./output")),
                 cache_path: default_cache_path(),
+                parquet_output_path: None,
                 datasets: default_datasets(),
                 dry_run: false,
                 force_overwrite: false,
@@ -330,6 +337,9 @@ impl Config {
         if !other.processing.cache_path.as_os_str().is_empty() {
             self.processing.cache_path = other.processing.cache_path;
         }
+        if other.processing.parquet_output_path.is_some() {
+            self.processing.parquet_output_path = other.processing.parquet_output_path;
+        }
         if !other.processing.datasets.is_empty() {
             self.processing.datasets = other.processing.datasets;
         }
@@ -356,6 +366,9 @@ impl Config {
         }
         if let Ok(cache_path) = std::env::var("MIDAS_CACHE_PATH") {
             self.processing.cache_path = PathBuf::from(cache_path);
+        }
+        if let Ok(parquet_output_path) = std::env::var("MIDAS_PARQUET_OUTPUT_PATH") {
+            self.processing.parquet_output_path = Some(PathBuf::from(parquet_output_path));
         }
         if let Ok(datasets) = std::env::var("MIDAS_DATASETS") {
             self.processing.datasets = datasets.split(',').map(|s| s.trim().to_string()).collect();
@@ -475,6 +488,15 @@ impl Config {
     /// Get memory limit in bytes
     pub fn memory_limit_bytes(&self) -> usize {
         self.performance.memory_limit_gb * 1024 * 1024 * 1024
+    }
+
+    /// Get the resolved parquet output path
+    /// Returns the custom parquet output path if specified, otherwise defaults to 'parquet' subfolder in input directory
+    pub fn get_parquet_output_path(&self) -> PathBuf {
+        match &self.processing.parquet_output_path {
+            Some(path) => path.clone(),
+            None => self.processing.input_path.join("parquet"),
+        }
     }
 
     /// Get default configuration file path

@@ -350,7 +350,7 @@ impl IntegrationTestFramework {
 
         // Process observations
         let processing_result = match processor
-            .process_observations(parse_result.observations)
+            .process_observations(parse_result.observations, false)
             .await
         {
             Ok(result) => result,

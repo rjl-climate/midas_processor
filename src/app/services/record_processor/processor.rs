@@ -8,8 +8,9 @@ use crate::Result;
 use crate::app::models::Observation;
 use crate::app::services::station_registry::StationRegistry;
 use crate::config::QualityControlConfig;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 use super::{
     deduplication::deduplicate_observations,
@@ -77,6 +78,7 @@ impl RecordProcessor {
     /// # Arguments
     ///
     /// * `observations` - Input observations to process
+    /// * `show_progress` - Whether to show progress bars for processing steps
     ///
     /// # Returns
     ///
@@ -84,6 +86,7 @@ impl RecordProcessor {
     pub async fn process_observations(
         &self,
         observations: Vec<Observation>,
+        show_progress: bool,
     ) -> Result<ProcessingResult> {
         let mut stats = ProcessingStats::new();
         stats.total_input = observations.len();
@@ -94,19 +97,80 @@ impl RecordProcessor {
         );
 
         // Step 1: Re-enrich observations with missing/placeholder station metadata
-        let enriched_observations =
-            re_enrich_station_metadata(observations, &self.station_registry, &mut stats).await?;
+        let enrichment_pb = if show_progress {
+            let pb = Self::create_processing_progress_bar(
+                observations.len() as u64,
+                "Station enrichment",
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        let enriched_observations = re_enrich_station_metadata(
+            observations,
+            &self.station_registry,
+            &mut stats,
+            enrichment_pb.as_ref(),
+        )
+        .await?;
         stats.enriched = enriched_observations.len();
 
+        if let Some(pb) = enrichment_pb {
+            pb.finish_with_message(format!(
+                "Station enrichment complete: {} observations",
+                enriched_observations.len()
+            ));
+        }
+
         // Step 2: Deduplicate observations based on record status and quality
-        let deduplicated_observations = deduplicate_observations(enriched_observations, &mut stats);
+        let dedup_pb = if show_progress {
+            let pb = Self::create_processing_progress_bar(
+                enriched_observations.len() as u64,
+                "Deduplication",
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        let deduplicated_observations =
+            deduplicate_observations(enriched_observations, &mut stats, dedup_pb.as_ref());
         stats.deduplicated = deduplicated_observations.len();
 
+        if let Some(pb) = dedup_pb {
+            pb.finish_with_message(format!(
+                "Deduplication complete: {} observations",
+                deduplicated_observations.len()
+            ));
+        }
+
         // Step 3: Apply processing quality filtering (MIDAS data quality preserved)
-        let filtered_observations =
-            apply_processing_filters(deduplicated_observations, &self.quality_config, &mut stats);
+        let filter_pb = if show_progress {
+            let pb = Self::create_processing_progress_bar(
+                deduplicated_observations.len() as u64,
+                "Quality filtering",
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        let filtered_observations = apply_processing_filters(
+            deduplicated_observations,
+            &self.quality_config,
+            &mut stats,
+            filter_pb.as_ref(),
+        );
         stats.quality_filtered = filtered_observations.len();
         stats.final_output = filtered_observations.len();
+
+        if let Some(pb) = filter_pb {
+            pb.finish_with_message(format!(
+                "Quality filtering complete: {} observations",
+                filtered_observations.len()
+            ));
+        }
 
         info!(
             "Record processing complete: {} -> {} observations ({}% success rate)",
@@ -116,7 +180,9 @@ impl RecordProcessor {
         );
 
         if !stats.is_successful() {
-            warn!(
+            // Use debug level to avoid interfering with progress bars
+            // This information is still available with verbose logging (-v)
+            debug!(
                 "Low success rate in record processing: {}% ({} errors)",
                 stats.success_rate(),
                 stats.errors
@@ -134,6 +200,19 @@ impl RecordProcessor {
     /// Get the quality control configuration used by this processor
     pub fn quality_config(&self) -> &QualityControlConfig {
         &self.quality_config
+    }
+
+    /// Create a progress bar for processing operations
+    fn create_processing_progress_bar(total: u64, operation: &str) -> ProgressBar {
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg} [{per_sec}] ETA: {eta}")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        pb.set_message(operation.to_string());
+        pb
     }
 
     /// Process observations with custom pipeline steps
@@ -178,6 +257,7 @@ impl RecordProcessor {
                 current_observations,
                 &self.station_registry,
                 &mut stats,
+                None,
             )
             .await?;
         }
@@ -185,14 +265,18 @@ impl RecordProcessor {
 
         // Step 2: Deduplication (optional)
         if !skip_deduplication {
-            current_observations = deduplicate_observations(current_observations, &mut stats);
+            current_observations = deduplicate_observations(current_observations, &mut stats, None);
         }
         stats.deduplicated = current_observations.len();
 
         // Step 3: Quality filtering (optional)
         if !skip_quality_filter {
-            current_observations =
-                apply_processing_filters(current_observations, &self.quality_config, &mut stats);
+            current_observations = apply_processing_filters(
+                current_observations,
+                &self.quality_config,
+                &mut stats,
+                None,
+            );
         }
         stats.quality_filtered = current_observations.len();
         stats.final_output = current_observations.len();

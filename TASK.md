@@ -1,11 +1,18 @@
-# REFACTOR Observation enrichment
+# Main Application Logic
 
-There is a possible inconsistency or improvement opportunity in the way we create the station registry, capture station operational dates and relate them to changes of id within the operational period.
 
-There is now a file that is available for each dataset that summarises station information. An example for the uk-daily-temperature-obs dataset is here: '/Users/richardlyon/Library/Application Support/midas-fetcher/cache/uk-daily-temperature-obs/station-metadata/midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv'
+You will now implement the `process` command that converts a MIDAS dataset into a parquet file.
 
-This is not currently processed by the station_registry service.
+The command will present the user with a list of available datasets to convert with a default option of `all` and get the user's selection.
 
-Individual weather capability files (e.g. '/Users/richardlyon/Library/Application Support/midas-fetcher/cache/uk-daily-temperature-obs/capability/aberdeenshire/00144_corgarff-castle-lodge/midas-open_uk-daily-temperature-obs_dv-202507_aberdeenshire_00144_corgarff-castle-lodge_capability.csv') contain information about how the id of the station has changed during the period of its operation.
+The selected dataset will be scanned and converted to a parquet database. The file will be named after the dataset and the version of it as YYYYMM.
 
-These two pieces of data have to be captured, reconciled, and used when validating observations during csv parsing and recortd processing. This should resolve the current bug in validation.
+The command will accept an optional parameter to specify the location. The config system will be updated to allow this to be specified. It will default to folder `parquet` in the root of the folder configured to contain the datasets.
+
+A progress bar will be presented to the user to display progress and ETA.
+
+You will implement comprehensive error handling.
+
+You will configure logging with tracing.
+
+You will handle graceful shutdown (e.g. from CRTL-C)

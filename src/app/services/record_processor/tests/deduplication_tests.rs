@@ -19,7 +19,7 @@ fn test_deduplicate_observations_no_duplicates() {
     ];
 
     let original_count = observations.len();
-    let result = deduplicate_observations(observations, &mut stats);
+    let result = deduplicate_observations(observations, &mut stats, None);
 
     assert_eq!(result.len(), original_count);
     assert_eq!(stats.errors, 0);
@@ -33,7 +33,7 @@ fn test_deduplicate_observations_with_duplicates() {
     let duplicates = create_duplicate_observations();
     assert_eq!(duplicates.len(), 2); // Original and corrected versions
 
-    let result = deduplicate_observations(duplicates, &mut stats);
+    let result = deduplicate_observations(duplicates, &mut stats, None);
 
     // Should keep only the corrected version (higher priority)
     assert_eq!(result.len(), 1);
@@ -58,7 +58,7 @@ fn test_deduplicate_observations_mixed_scenarios() {
     // Add another unique observation
     observations.push(create_observation_with_good_station("unique3", 125));
 
-    let result = deduplicate_observations(observations, &mut stats);
+    let result = deduplicate_observations(observations, &mut stats, None);
 
     // Should have 4 observations: 3 unique + 1 from the duplicate pair
     assert_eq!(result.len(), 4);
@@ -140,17 +140,17 @@ fn test_deduplication_priority_rules() {
 
     // Test different orders to ensure priority works regardless of input order
     let observations1 = vec![original.clone(), corrected.clone(), final_obs.clone()];
-    let result1 = deduplicate_observations(observations1, &mut stats);
+    let result1 = deduplicate_observations(observations1, &mut stats, None);
     assert_eq!(result1.len(), 1);
     assert_eq!(result1[0].rec_st_ind, record_status::CORRECTED as i32);
 
     let observations2 = vec![final_obs.clone(), original.clone(), corrected.clone()];
-    let result2 = deduplicate_observations(observations2, &mut stats);
+    let result2 = deduplicate_observations(observations2, &mut stats, None);
     assert_eq!(result2.len(), 1);
     assert_eq!(result2[0].rec_st_ind, record_status::CORRECTED as i32);
 
     let observations3 = vec![corrected.clone(), final_obs.clone(), original.clone()];
-    let result3 = deduplicate_observations(observations3, &mut stats);
+    let result3 = deduplicate_observations(observations3, &mut stats, None);
     assert_eq!(result3.len(), 1);
     assert_eq!(result3[0].rec_st_ind, record_status::CORRECTED as i32);
 }
@@ -175,7 +175,7 @@ fn test_deduplication_secondary_criteria() {
     obs2.measurements.insert("pressure".to_string(), 1013.25);
 
     let observations = vec![obs1, obs2];
-    let result = deduplicate_observations(observations, &mut stats);
+    let result = deduplicate_observations(observations, &mut stats, None);
 
     assert_eq!(result.len(), 1);
     // Should keep the one with more measurements
@@ -314,7 +314,7 @@ fn test_deduplication_with_complex_duplicates() {
     // Group 3: Unique observation
     observations.push(create_observation_with_good_station("obs3", 125));
 
-    let result = deduplicate_observations(observations, &mut stats);
+    let result = deduplicate_observations(observations, &mut stats, None);
 
     // Should have 3 observations: one from each group
     assert_eq!(result.len(), 3);
@@ -355,7 +355,7 @@ fn test_deduplication_preserves_processing_flags() {
     obs2.set_processing_flag("custom_flag".to_string(), ProcessingFlag::ParseFailed);
 
     let observations = vec![obs1, obs2];
-    let result = deduplicate_observations(observations, &mut stats);
+    let result = deduplicate_observations(observations, &mut stats, None);
 
     assert_eq!(result.len(), 1);
 
@@ -372,18 +372,18 @@ fn test_deduplication_edge_cases() {
     let mut stats = ProcessingStats::new();
 
     // Test empty input
-    let empty_result = deduplicate_observations(vec![], &mut stats);
+    let empty_result = deduplicate_observations(vec![], &mut stats, None);
     assert_eq!(empty_result.len(), 0);
 
     // Test single observation
     let single_obs = vec![create_observation_with_good_station("obs1", 123)];
-    let single_result = deduplicate_observations(single_obs, &mut stats);
+    let single_result = deduplicate_observations(single_obs, &mut stats, None);
     assert_eq!(single_result.len(), 1);
 
     // Test observations with unknown record status
     let mut obs_unknown = create_observation_with_good_station("obs1", 123);
     obs_unknown.rec_st_ind = 999; // Unknown status
-    let unknown_result = deduplicate_observations(vec![obs_unknown], &mut stats);
+    let unknown_result = deduplicate_observations(vec![obs_unknown], &mut stats, None);
     assert_eq!(unknown_result.len(), 1);
 
     assert_eq!(stats.errors, 0);

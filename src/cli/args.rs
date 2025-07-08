@@ -139,6 +139,17 @@ pub struct ProcessArgs {
     #[arg(long = "force", help = "Force overwrite of existing output files")]
     pub force_overwrite: bool,
 
+    /// Custom output path for Parquet files
+    ///
+    /// If not specified, defaults to 'parquet' folder within the input directory.
+    /// This allows you to specify exactly where Parquet files should be written.
+    #[arg(
+        long = "parquet-output-path",
+        value_name = "PATH",
+        help = "Custom output path for Parquet files"
+    )]
+    pub parquet_output_path: Option<PathBuf>,
+
     /// Path to configuration file
     ///
     /// TOML configuration file for advanced settings. If not specified,
@@ -836,6 +847,7 @@ impl Default for ProcessArgs {
             include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
+            parquet_output_path: None,
             config_file: None,
             workers: DEFAULT_PARALLEL_WORKERS,
             memory_limit_gb: DEFAULT_MEMORY_LIMIT_GB,
@@ -899,6 +911,7 @@ mod tests {
             include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
+            parquet_output_path: None,
             config_file: None,
             workers: 4,
             memory_limit_gb: 8,
@@ -945,6 +958,7 @@ mod tests {
             include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
+            parquet_output_path: None,
             config_file: None,
             workers: 4,
             memory_limit_gb: 8,
@@ -980,6 +994,7 @@ mod tests {
             include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
+            parquet_output_path: None,
             config_file: None,
             workers: 4,
             memory_limit_gb: 8,
@@ -1020,6 +1035,7 @@ mod tests {
             include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
+            parquet_output_path: None,
             config_file: None,
             workers: 4,
             memory_limit_gb: 8,

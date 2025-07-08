@@ -6,6 +6,7 @@
 
 use crate::app::models::{Observation, ProcessingFlag};
 use crate::constants::record_status;
+use indicatif::ProgressBar;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -22,6 +23,7 @@ use super::stats::ProcessingStats;
 ///
 /// * `observations` - Input observations to deduplicate
 /// * `stats` - Mutable reference to processing statistics
+/// * `progress_bar` - Optional progress bar for tracking progress
 ///
 /// # Returns
 ///
@@ -29,6 +31,7 @@ use super::stats::ProcessingStats;
 pub fn deduplicate_observations(
     observations: Vec<Observation>,
     _stats: &mut ProcessingStats,
+    progress_bar: Option<&ProgressBar>,
 ) -> Vec<Observation> {
     let mut groups: HashMap<(String, i32, chrono::DateTime<chrono::Utc>), Vec<Observation>> =
         HashMap::new();
@@ -47,7 +50,20 @@ pub fn deduplicate_observations(
     let mut duplicates_removed = 0;
 
     // For each group, apply deduplication rules
-    for (key, group_observations) in groups {
+    let total_groups = groups.len();
+    for (index, (key, group_observations)) in groups.into_iter().enumerate() {
+        // Update progress bar
+        if let Some(pb) = progress_bar {
+            pb.set_position(index as u64);
+            if index % 100 == 0 || index == total_groups - 1 {
+                pb.set_message(format!(
+                    "Processing group {} of {}",
+                    index + 1,
+                    total_groups
+                ));
+            }
+        }
+
         if group_observations.len() == 1 {
             // No duplicates, keep the single observation
             let mut observation = group_observations.into_iter().next().unwrap();
@@ -65,6 +81,11 @@ pub fn deduplicate_observations(
                 key,
                 group_size - 1
             );
+        }
+
+        // Increment progress
+        if let Some(pb) = progress_bar {
+            pb.inc(1);
         }
     }
 

@@ -225,10 +225,10 @@ mod tests {
 
         assert_eq!(stats.observations_written, 5);
 
-        let output_file = temp_dir
-            .path()
-            .join("parquet_files")
-            .join("test-dataset.parquet");
+        // Use the new versioned filename structure
+        let expected_filename =
+            crate::app::services::parquet_writer::utils::create_versioned_filename("test-dataset");
+        let output_file = temp_dir.path().join(expected_filename);
         assert!(output_file.exists());
     }
 

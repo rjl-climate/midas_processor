@@ -3,8 +3,9 @@
 //! This module contains the complete data processing workflow including
 //! configuration loading, dataset processing, and report generation.
 
+use super::parallel_processor::ParallelProcessor;
 use super::shared::{
-    ProcessingStats, create_progress_bar, discover_csv_files, is_critical_error,
+    ProcessingStats, create_progress_bar, discover_csv_files, discover_datasets, is_critical_error,
     load_configuration, prepare_directories, setup_logging,
 };
 use crate::app::services::badc_csv_parser::BadcCsvParser;
@@ -45,23 +46,44 @@ pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
     // Validate and prepare directories
     prepare_directories(&config).await?;
 
-    // Get datasets to process
-    let datasets = args.get_datasets();
+    // Get datasets to process - use interactive selection if none specified
+    let datasets = if args.datasets.is_none() && !args.quiet {
+        // Interactive mode - discover available datasets and prompt user
+        info!("No datasets specified, entering interactive mode");
+
+        let input_path = match &args.input_path {
+            Some(path) => path.clone(),
+            None => config.processing.input_path.clone(),
+        };
+
+        let available_datasets = discover_datasets(&input_path)
+            .map_err(|e| Error::configuration(format!("Failed to discover datasets: {}", e)))?;
+
+        if available_datasets.is_empty() {
+            return Err(Error::configuration(format!(
+                "No MIDAS datasets found in input directory: {}",
+                input_path.display()
+            )));
+        }
+
+        {
+            info!(
+                "Prompting user for dataset selection from {} available datasets",
+                available_datasets.len()
+            );
+            let selected = crate::cli::input::prompt_dataset_selection(&available_datasets)?;
+            info!("User selected {} datasets: {:?}", selected.len(), selected);
+            selected
+        }
+    } else {
+        args.get_datasets()
+    };
+
     info!("Processing {} datasets: {:?}", datasets.len(), datasets);
 
     if args.dry_run {
         return run_dry_run(&config, &datasets).await;
     }
-
-    // Set up progress reporting
-    let progress_bar = if args.show_progress() {
-        Some(create_progress_bar(
-            datasets.len() as u64,
-            "Initializing...",
-        ))
-    } else {
-        None
-    };
 
     // Process each dataset
     let mut stats = ProcessingStats {
@@ -70,14 +92,14 @@ pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
     };
 
     for (i, dataset) in datasets.iter().enumerate() {
-        if let Some(pb) = &progress_bar {
-            pb.set_position(i as u64);
-            pb.set_message(format!("Processing {}", dataset));
-        }
+        info!(
+            "Processing dataset {} of {}: {}",
+            i + 1,
+            datasets.len(),
+            dataset
+        );
 
-        info!("Processing dataset: {}", dataset);
-
-        match process_dataset(&config, dataset).await {
+        match process_dataset(&config, dataset, args.show_progress()).await {
             Ok(dataset_stats) => {
                 stats.files_processed += dataset_stats.files_processed;
                 stats.stations_loaded += dataset_stats.stations_loaded;
@@ -99,10 +121,6 @@ pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
                 }
             }
         }
-    }
-
-    if let Some(pb) = &progress_bar {
-        pb.finish_with_message("Processing complete");
     }
 
     stats.processing_time = start_time.elapsed();
@@ -137,10 +155,11 @@ async fn run_dry_run(config: &Config, datasets: &[String]) -> Result<ProcessingS
         stats.files_processed += csv_files.len();
 
         // Estimate output file path
-        let output_file = config
-            .processing
-            .output_path
-            .join(format!("{}.parquet", dataset));
+        let parquet_output_path = config.get_parquet_output_path();
+        let output_file = crate::app::services::parquet_writer::utils::create_dataset_output_path(
+            dataset,
+            &parquet_output_path,
+        );
         info!("Would create: {}", output_file.display());
     }
 
@@ -153,7 +172,11 @@ async fn run_dry_run(config: &Config, datasets: &[String]) -> Result<ProcessingS
 }
 
 /// Process a single dataset with full pipeline
-async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingStats> {
+async fn process_dataset(
+    config: &Config,
+    dataset: &str,
+    show_progress: bool,
+) -> Result<ProcessingStats> {
     info!("Processing dataset: {}", dataset);
     let start_time = Instant::now();
 
@@ -178,11 +201,6 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
         load_stats.load_duration.as_secs_f64()
     );
 
-    // Create processing components
-    let registry_arc = Arc::new(station_registry);
-    let parser = BadcCsvParser::new(registry_arc.clone());
-    let processor = RecordProcessor::new(registry_arc, config.quality_control.clone());
-
     // Discover CSV files to process
     let csv_files = discover_csv_files(&dataset_path)?;
     info!("Discovered {} CSV files to process", csv_files.len());
@@ -196,13 +214,130 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
         });
     }
 
+    // Decide whether to use parallel or sequential processing
+    let use_parallel = config.performance.parallel_workers > 1 && csv_files.len() > 1;
+
+    if use_parallel {
+        info!(
+            "Using parallel processing with {} workers for {} files",
+            config.performance.parallel_workers,
+            csv_files.len()
+        );
+
+        // Use parallel processing
+        let processor = ParallelProcessor::new(
+            Arc::new(config.clone()),
+            dataset.to_string(),
+            Arc::new(station_registry),
+        );
+
+        let parallel_result = processor
+            .process_files_parallel(&csv_files, show_progress)
+            .await?;
+
+        // Calculate output file size
+        let parquet_output_path = config.get_parquet_output_path();
+        let output_file = crate::app::services::parquet_writer::utils::create_dataset_output_path(
+            dataset,
+            &parquet_output_path,
+        );
+
+        let mut output_file_size = 0;
+        if output_file.exists() {
+            if let Ok(metadata) = std::fs::metadata(&output_file) {
+                output_file_size = metadata.len();
+            }
+        }
+
+        let processing_time = start_time.elapsed();
+
+        info!(
+            "Parallel processing complete: {} observations written in {:.2}s",
+            parallel_result.writing_stats.observations_written,
+            processing_time.as_secs_f64()
+        );
+
+        // Return comprehensive statistics
+        Ok(ProcessingStats {
+            datasets_processed: 1,
+            files_processed: parallel_result.processing_stats.successful_files,
+            stations_loaded: load_stats.stations_loaded,
+            observations_processed: parallel_result.writing_stats.observations_written,
+            errors_encountered: parallel_result.processing_stats.total_errors,
+            processing_time,
+            output_sizes: if output_file_size > 0 {
+                let filename =
+                    crate::app::services::parquet_writer::utils::create_versioned_filename(dataset);
+                vec![(filename, output_file_size)]
+            } else {
+                vec![]
+            },
+        })
+    } else {
+        info!(
+            "Using sequential processing (parallel_workers={}, files={})",
+            config.performance.parallel_workers,
+            csv_files.len()
+        );
+
+        // Fall back to sequential processing for single worker or single file
+        process_dataset_sequential(
+            config,
+            dataset,
+            csv_files,
+            load_stats,
+            show_progress,
+            start_time,
+        )
+        .await
+    }
+}
+
+/// Sequential processing fallback for single worker or small datasets
+async fn process_dataset_sequential(
+    config: &Config,
+    dataset: &str,
+    csv_files: Vec<std::path::PathBuf>,
+    load_stats: crate::app::services::station_registry::LoadStats,
+    show_progress: bool,
+    start_time: Instant,
+) -> Result<ProcessingStats> {
+    // Load station registry for this dataset
+    let (station_registry, _) =
+        StationRegistry::load_for_dataset(&config.processing.input_path, dataset, false).await?;
+
+    // Create processing components
+    let registry_arc = Arc::new(station_registry);
+    let parser = BadcCsvParser::new(registry_arc.clone());
+    let processor = RecordProcessor::new(registry_arc, config.quality_control.clone());
+
+    // Set up progress bar for this dataset's file processing
+    let progress_bar = if show_progress {
+        Some(create_progress_bar(
+            csv_files.len() as u64,
+            &format!("Parsing {} files (sequential)...", dataset),
+        ))
+    } else {
+        None
+    };
+
     // Process all CSV files and collect observations
     let mut all_observations = Vec::new();
     let mut files_processed = 0;
     let mut total_errors = 0;
 
-    info!("Parsing {} CSV files...", csv_files.len());
-    for csv_file in &csv_files {
+    info!("Parsing {} CSV files sequentially...", csv_files.len());
+    for (file_index, csv_file) in csv_files.iter().enumerate() {
+        // Update progress bar
+        if let Some(pb) = &progress_bar {
+            pb.set_position(file_index as u64);
+            let file_name = csv_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown");
+            pb.set_message(format!("Parsing {}", file_name));
+        }
+
         match parser.parse_file(csv_file).await {
             Ok(result) => {
                 files_processed += 1;
@@ -221,6 +356,16 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
                 total_errors += 1;
             }
         }
+
+        // Increment progress after each file
+        if let Some(pb) = &progress_bar {
+            pb.inc(1);
+        }
+    }
+
+    // Finish file parsing progress bar
+    if let Some(pb) = &progress_bar {
+        pb.finish_with_message(format!("Parsed {} files", csv_files.len()));
     }
 
     info!(
@@ -232,7 +377,10 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
     // Process observations (enrichment, deduplication, quality filtering)
     if !all_observations.is_empty() {
         info!("Processing {} observations...", all_observations.len());
-        let processing_result = processor.process_observations(all_observations).await?;
+
+        let processing_result = processor
+            .process_observations(all_observations, show_progress)
+            .await?;
         all_observations = processing_result.observations;
 
         info!(
@@ -251,6 +399,14 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
             observations_count
         );
 
+        // Show writing progress
+        if show_progress {
+            println!(
+                "Writing {} observations to Parquet format...",
+                observations_count
+            );
+        }
+
         // Configure Parquet writer
         let writer_config = WriterConfig {
             row_group_size: config.parquet.row_group_size,
@@ -263,20 +419,20 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
         };
 
         // Write dataset to Parquet
+        let parquet_output_path = config.get_parquet_output_path();
         let writing_stats = write_dataset_to_parquet(
             dataset,
             all_observations,
-            &config.processing.output_path,
+            &parquet_output_path,
             writer_config,
         )
         .await?;
 
         // Calculate output file size
-        let output_file = config
-            .processing
-            .output_path
-            .join("parquet_files")
-            .join(format!("{}.parquet", dataset));
+        let output_file = crate::app::services::parquet_writer::utils::create_dataset_output_path(
+            dataset,
+            &parquet_output_path,
+        );
 
         if output_file.exists() {
             if let Ok(metadata) = std::fs::metadata(&output_file) {
@@ -306,7 +462,9 @@ async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingSta
         errors_encountered: total_errors,
         processing_time,
         output_sizes: if output_file_size > 0 {
-            vec![(format!("{}.parquet", dataset), output_file_size)]
+            let filename =
+                crate::app::services::parquet_writer::utils::create_versioned_filename(dataset);
+            vec![(filename, output_file_size)]
         } else {
             vec![]
         },

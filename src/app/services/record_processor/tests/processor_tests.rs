@@ -34,7 +34,7 @@ async fn test_process_observations_full_pipeline() {
         create_observation_with_good_station("obs3", 124),
     ];
 
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -55,7 +55,7 @@ async fn test_process_observations_empty_input() {
     let processor = RecordProcessor::new(station_registry, config);
 
     let observations: Vec<Observation> = vec![];
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -82,7 +82,7 @@ async fn test_process_observations_with_duplicates() {
     let mut duplicates = create_duplicate_observations();
     observations.append(&mut duplicates);
 
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -263,7 +263,7 @@ async fn test_processing_stats_integration() {
         create_observation_with_good_station("obs3", 125),
     ];
 
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -302,7 +302,7 @@ async fn test_end_to_end_processing_scenario() {
     observations.append(&mut duplicates);
 
     let original_count = observations.len();
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -339,14 +339,14 @@ async fn test_processing_with_different_configurations() {
     let strict_config = create_test_quality_config();
     let strict_processor = RecordProcessor::new(station_registry.clone(), strict_config);
     let strict_result = strict_processor
-        .process_observations(observations.clone())
+        .process_observations(observations.clone(), false)
         .await;
 
     // Test with permissive configuration
     let permissive_config = create_permissive_quality_config();
     let permissive_processor = RecordProcessor::new(station_registry, permissive_config);
     let permissive_result = permissive_processor
-        .process_observations(observations)
+        .process_observations(observations, false)
         .await;
 
     assert!(strict_result.is_ok());
@@ -372,7 +372,7 @@ async fn test_processor_error_handling() {
     let observations = vec![problematic_obs];
 
     // Should handle gracefully without panicking
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
     assert!(result.is_ok());
 }
 
@@ -398,7 +398,7 @@ async fn test_processing_preserves_original_data() {
         .insert("pressure".to_string(), 1013.25);
 
     let observations = vec![observation.clone()];
-    let result = processor.process_observations(observations).await;
+    let result = processor.process_observations(observations, false).await;
 
     assert!(result.is_ok());
     let processing_result = result.unwrap();
@@ -440,8 +440,11 @@ async fn test_processor_concurrent_access() {
             create_observation_with_good_station(&format!("obs_{}_2", i), 124 + i),
         ];
 
-        let handle =
-            tokio::spawn(async move { processor_clone.process_observations(observations).await });
+        let handle = tokio::spawn(async move {
+            processor_clone
+                .process_observations(observations, false)
+                .await
+        });
         handles.push(handle);
     }
 
