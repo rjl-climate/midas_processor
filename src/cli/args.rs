@@ -37,6 +37,8 @@ pub enum Commands {
     Process(ProcessArgs),
     /// Generate station registry reports and visualizations
     Stations(StationsArgs),
+    /// Validate processing pipeline with real MIDAS data
+    Validate(ValidateArgs),
 }
 
 /// Arguments for the process command (main data processing)
@@ -98,37 +100,27 @@ pub struct ProcessArgs {
     )]
     pub datasets: Option<DatasetList>,
 
-    /// Include suspect quality data in output
+    /// Allow observations without station metadata
     ///
-    /// By default, only data that passed all quality control checks is included.
-    /// This flag includes data that failed at least one QC check but may still be usable.
+    /// By default, observations must have valid station metadata to be included.
+    /// This flag allows observations with missing station metadata through.
+    /// Note: ALL MIDAS data quality indicators are preserved regardless.
     #[arg(
-        long = "include-suspect",
-        help = "Include suspect quality data in output"
+        long = "allow-missing-stations",
+        help = "Allow observations without station metadata"
     )]
-    pub include_suspect: bool,
+    pub allow_missing_stations: bool,
 
-    /// Include unchecked quality data in output
+    /// Include observations with no measurements
     ///
-    /// By default, only data that has been through quality control is included.
-    /// This flag includes data that has not been quality controlled.
+    /// By default, observations without any measurement data are excluded as they
+    /// likely indicate processing failures. This flag includes them anyway.
+    /// Note: ALL MIDAS data quality indicators are preserved regardless.
     #[arg(
-        long = "include-unchecked",
-        help = "Include unchecked quality data in output"
+        long = "include-empty-measurements",
+        help = "Include observations with no measurements"
     )]
-    pub include_unchecked: bool,
-
-    /// Minimum quality control version to accept
-    ///
-    /// MIDAS data goes through multiple QC versions. This sets the minimum
-    /// version number to accept (higher is better quality).
-    #[arg(
-        long = "qc-version",
-        value_name = "VERSION",
-        default_value = "1",
-        help = "Minimum quality control version to accept"
-    )]
-    pub qc_version: i32,
+    pub include_empty_measurements: bool,
 
     /// Perform a dry run without actual processing
     ///
@@ -194,6 +186,8 @@ pub struct ProcessArgs {
     )]
     pub verbose: u8,
 
+    /// Note: ALL MIDAS data quality indicators (version_num, quality flags, rec_st_ind)
+    /// are preserved in the output without interpretation, following the pass-through directive.
     /// Suppress output (quiet mode)
     ///
     /// Only show errors and critical messages. Overrides verbose settings.
@@ -301,6 +295,162 @@ pub struct StationsArgs {
     pub verbose: u8,
 }
 
+/// Arguments for the validate command (processing pipeline validation)
+#[derive(Debug, Clone, Parser)]
+pub struct ValidateArgs {
+    /// Path to MIDAS fetcher cache directory
+    ///
+    /// Should contain directories like uk-daily-temperature-obs/, uk-daily-weather-obs/, etc.
+    /// with their respective qcv-1/ and capability/ subdirectories.
+    /// If not specified, defaults to ~/Library/Application Support/midas-fetcher/cache
+    #[arg(
+        short = 'i',
+        long = "input",
+        value_name = "PATH",
+        help = "Path to MIDAS fetcher cache directory"
+    )]
+    pub cache_path: Option<PathBuf>,
+
+    /// Output directory for validation results
+    ///
+    /// Will be created if it doesn't exist. Generated files include:
+    /// detailed_stats.json, test_summary.md, issues.csv, station_issues.csv
+    /// If not specified, defaults to ./validation_output
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "PATH",
+        help = "Output directory for validation results"
+    )]
+    pub output_dir: Option<PathBuf>,
+
+    /// Maximum number of files to process for validation
+    ///
+    /// Limits the number of CSV files processed to control test duration.
+    /// Files are sampled to ensure representative coverage across datasets.
+    #[arg(
+        long = "max-files",
+        value_name = "COUNT",
+        default_value = "1000",
+        help = "Maximum number of files to process for validation"
+    )]
+    pub max_files: usize,
+
+    /// Specific datasets to validate (comma-separated list)
+    ///
+    /// If not specified, validates all datasets found in cache.
+    /// Available datasets: uk-daily-temperature-obs, uk-daily-weather-obs, uk-daily-rain-obs,
+    /// uk-hourly-weather-obs, uk-hourly-rain-obs, uk-mean-wind-obs, uk-radiation-obs, uk-soil-temperature-obs
+    #[arg(
+        short = 'd',
+        long = "datasets",
+        value_name = "LIST",
+        help = "Comma-separated list of datasets to validate",
+        long_help = "Specific datasets to validate as a comma-separated list.\n\
+                     Available datasets:\n  \
+                     uk-daily-temperature-obs, uk-daily-weather-obs, uk-daily-rain-obs,\n  \
+                     uk-hourly-weather-obs, uk-hourly-rain-obs, uk-mean-wind-obs,\n  \
+                     uk-radiation-obs, uk-soil-temperature-obs\n\n\
+                     If not specified, validates all datasets found in cache"
+    )]
+    pub datasets: Option<DatasetList>,
+
+    /// Minimum file size in bytes to include in validation
+    ///
+    /// Filters out very small files that may not be representative
+    #[arg(
+        long = "min-file-size",
+        value_name = "BYTES",
+        default_value = "1024",
+        help = "Minimum file size in bytes to include in validation"
+    )]
+    pub min_file_size: u64,
+
+    /// Maximum file size in bytes to include in validation
+    ///
+    /// Filters out very large files to control memory usage and test duration
+    #[arg(
+        long = "max-file-size",
+        value_name = "BYTES",
+        default_value = "104857600", // 100MB
+        help = "Maximum file size in bytes to include in validation"
+    )]
+    pub max_file_size: u64,
+
+    /// Continue processing after encountering errors
+    ///
+    /// By default, validation continues after file processing errors to get
+    /// comprehensive results. Use --no-continue-on-error to stop on first error.
+    #[arg(
+        long = "continue-on-error",
+        default_value = "true",
+        help = "Continue processing after encountering errors"
+    )]
+    pub continue_on_error: bool,
+
+    /// Maximum processing time per file in seconds
+    ///
+    /// Files that take longer than this to process will be flagged as performance issues
+    #[arg(
+        long = "max-processing-time",
+        value_name = "SECONDS",
+        default_value = "300",
+        help = "Maximum processing time per file in seconds"
+    )]
+    pub max_processing_time: u64,
+
+    /// Allow observations without station metadata in validation
+    ///
+    /// By default, observations must have valid station metadata to be included.
+    /// This flag allows observations with missing station metadata through.
+    /// Note: ALL MIDAS data quality indicators are preserved regardless.
+    #[arg(
+        long = "allow-missing-stations",
+        help = "Allow observations without station metadata in validation"
+    )]
+    pub allow_missing_stations: bool,
+
+    /// Include observations with no measurements in validation
+    ///
+    /// By default, observations without any measurement data are excluded as they
+    /// likely indicate processing failures. This flag includes them anyway.
+    /// Note: ALL MIDAS data quality indicators are preserved regardless.
+    #[arg(
+        long = "include-empty-measurements",
+        help = "Include observations with no measurements in validation"
+    )]
+    pub include_empty_measurements: bool,
+
+    /// Output format for validation results
+    #[arg(
+        long = "output-format",
+        value_enum,
+        default_value = "human",
+        help = "Output format for validation results"
+    )]
+    pub output_format: OutputFormat,
+
+    /// Enable verbose logging output
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        action = clap::ArgAction::Count,
+        help = "Enable verbose logging (-v: info, -vv: debug, -vvv: trace)"
+    )]
+    pub verbose: u8,
+
+    /// Suppress output (quiet mode)
+    ///
+    /// Only show errors and critical messages. Overrides verbose settings.
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        help = "Suppress output except errors",
+        conflicts_with = "verbose"
+    )]
+    pub quiet: bool,
+}
+
 /// Output format options for machine-readable results
 #[derive(Debug, Clone, ValueEnum)]
 pub enum OutputFormat {
@@ -398,12 +548,7 @@ impl ProcessArgs {
             ));
         }
 
-        // Validate QC version
-        if self.qc_version < 0 {
-            return Err(Error::configuration(
-                "QC version must be non-negative".to_string(),
-            ));
-        }
+        // Note: MIDAS quality indicators are preserved without validation
 
         // Validate config file exists if specified
         if let Some(config_file) = &self.config_file {
@@ -580,6 +725,106 @@ impl StationsArgs {
     }
 }
 
+impl ValidateArgs {
+    /// Validate the validate command arguments for consistency
+    pub fn validate(&self) -> Result<()> {
+        // Validate cache path exists if specified
+        if let Some(cache_path) = &self.cache_path {
+            if !cache_path.exists() {
+                return Err(Error::configuration(format!(
+                    "Cache path does not exist: {}",
+                    cache_path.display()
+                )));
+            }
+
+            if !cache_path.is_dir() {
+                return Err(Error::configuration(format!(
+                    "Cache path is not a directory: {}",
+                    cache_path.display()
+                )));
+            }
+        }
+
+        // Validate output directory parent exists if specified
+        if let Some(output_dir) = &self.output_dir {
+            if let Some(parent) = output_dir.parent() {
+                if !parent.exists() {
+                    return Err(Error::configuration(format!(
+                        "Output directory parent does not exist: {}",
+                        parent.display()
+                    )));
+                }
+            }
+        }
+
+        // Validate max_files
+        if self.max_files == 0 {
+            return Err(Error::configuration(
+                "max-files must be greater than 0".to_string(),
+            ));
+        }
+
+        // Validate file size limits
+        if self.min_file_size > self.max_file_size {
+            return Err(Error::configuration(
+                "min-file-size must be less than or equal to max-file-size".to_string(),
+            ));
+        }
+
+        // Note: MIDAS quality indicators are preserved without validation
+
+        // Validate processing time limit
+        if self.max_processing_time == 0 {
+            return Err(Error::configuration(
+                "max-processing-time must be greater than 0".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Get the list of datasets to validate
+    pub fn get_datasets(&self) -> Option<Vec<String>> {
+        self.datasets.as_ref().map(|list| list.datasets.clone())
+    }
+
+    /// Determine the appropriate log level based on verbosity flags
+    pub fn get_log_level(&self) -> &'static str {
+        if self.quiet {
+            "error"
+        } else {
+            match self.verbose {
+                0 => "warn",
+                1 => "info",
+                2 => "debug",
+                _ => "trace",
+            }
+        }
+    }
+
+    /// Check if we should show progress bars (not in quiet mode)
+    pub fn show_progress(&self) -> bool {
+        !self.quiet
+    }
+
+    /// Get cache path with default fallback
+    pub fn get_cache_path(&self) -> PathBuf {
+        self.cache_path.clone().unwrap_or_else(|| {
+            // Default to midas-fetcher cache location
+            directories::UserDirs::new()
+                .map(|dirs| dirs.home_dir().join(".local/share/midas-fetcher/cache"))
+                .unwrap_or_else(|| PathBuf::from("./cache"))
+        })
+    }
+
+    /// Get output directory with default fallback
+    pub fn get_output_dir(&self) -> PathBuf {
+        self.output_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("./validation_output"))
+    }
+}
+
 impl Default for ProcessArgs {
     fn default() -> Self {
         Self {
@@ -587,9 +832,8 @@ impl Default for ProcessArgs {
             output_path: None,
             cache_path: None,
             datasets: None,
-            include_suspect: false,
-            include_unchecked: false,
-            qc_version: 1,
+            allow_missing_stations: false,
+            include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
             config_file: None,
@@ -651,9 +895,8 @@ mod tests {
             output_path: Some(temp_path.join("output")),
             cache_path: None,
             datasets: None,
-            include_suspect: false,
-            include_unchecked: false,
-            qc_version: 1,
+            allow_missing_stations: false,
+            include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
             config_file: None,
@@ -679,10 +922,7 @@ mod tests {
         invalid_args.memory_limit_gb = 0;
         assert!(invalid_args.validate().is_err());
 
-        // Test invalid QC version
-        let mut invalid_args = args.clone();
-        invalid_args.qc_version = -1;
-        assert!(invalid_args.validate().is_err());
+        // Note: MIDAS quality indicators are preserved without validation
 
         // Test nonexistent input path
         let mut invalid_args = args.clone();
@@ -701,9 +941,8 @@ mod tests {
             output_path: Some(temp_path.join("output")),
             cache_path: None,
             datasets: None,
-            include_suspect: false,
-            include_unchecked: false,
-            qc_version: 1,
+            allow_missing_stations: false,
+            include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
             config_file: None,
@@ -737,9 +976,8 @@ mod tests {
             output_path: Some(temp_path.join("output")),
             cache_path: None,
             datasets: None,
-            include_suspect: false,
-            include_unchecked: false,
-            qc_version: 1,
+            allow_missing_stations: false,
+            include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
             config_file: None,
@@ -778,9 +1016,8 @@ mod tests {
             output_path: Some(temp_path.join("output")),
             cache_path: None,
             datasets: None,
-            include_suspect: false,
-            include_unchecked: false,
-            qc_version: 1,
+            allow_missing_stations: false,
+            include_empty_measurements: false,
             dry_run: false,
             force_overwrite: false,
             config_file: None,

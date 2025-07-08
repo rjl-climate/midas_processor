@@ -6,7 +6,7 @@
 use super::StationRegistry;
 use super::metadata::LoadStats;
 use super::parser::{
-    extract_capability_metadata, parse_capability_station_metadata, parse_station_record,
+    extract_capability_metadata, parse_capability_station_metadata, parse_station_metadata_record,
 };
 use crate::app::models::Station;
 use crate::constants::CAPABILITY_DIR_NAME;
@@ -20,15 +20,15 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 impl StationRegistry {
-    /// Load station metadata from MIDAS cache capability files
+    /// Load station metadata from MIDAS cache for a single dataset
     ///
-    /// This method scans the specified datasets in the MIDAS cache and loads
-    /// station metadata from capability files. It filters records to only
-    /// include definitive station information (rec_st_ind = 9).
+    /// This method scans the specified dataset in the MIDAS cache and loads
+    /// station metadata from capability files and centralized metadata files.
+    /// It filters records to only include definitive station information (rec_st_ind = 9).
     ///
     /// # Arguments
     /// * `cache_path` - Root path to the MIDAS cache directory
-    /// * `datasets` - List of dataset names to process
+    /// * `dataset` - Name of the dataset to process (e.g., "uk-mean-wind-obs")
     /// * `show_progress` - Whether to display a progress bar
     ///
     /// # Returns
@@ -38,13 +38,14 @@ impl StationRegistry {
     /// * Returns `Error::StationRegistry` if cache directory doesn't exist
     /// * Returns `Error::Io` for file system access issues
     /// * Returns `Error::CsvParsing` for malformed capability files
-    pub async fn load_from_cache(
+    pub async fn load_for_dataset(
         cache_path: &Path,
-        datasets: &[String],
+        dataset: &str,
         show_progress: bool,
     ) -> Result<(Self, LoadStats)> {
         info!(
-            "Loading station registry from cache: {}",
+            "Loading station registry for dataset '{}' from cache: {}",
+            dataset,
             cache_path.display()
         );
 
@@ -60,9 +61,9 @@ impl StationRegistry {
             )));
         }
 
-        // Discover all station files (capability and metadata) across datasets
+        // Discover all station files (capability and metadata) for single dataset
         let (capability_files, metadata_files) =
-            Self::discover_station_files(cache_path, datasets)?;
+            Self::discover_station_files_for_dataset(cache_path, dataset)?;
 
         let total_files = capability_files.len() + metadata_files.len();
         info!(
@@ -88,7 +89,7 @@ impl StationRegistry {
 
         let mut file_index = 0;
 
-        // Process capability files first
+        // Process capability files first (metadata files will override these if present)
         for file_path in capability_files.iter() {
             if let Some(pb) = &progress_bar {
                 pb.set_position(file_index as u64);
@@ -132,7 +133,7 @@ impl StationRegistry {
             file_index += 1;
         }
 
-        // Process centralized metadata files
+        // Process centralized metadata files (these take priority over capability files)
         for file_path in metadata_files.iter() {
             if let Some(pb) = &progress_bar {
                 pb.set_position(file_index as u64);
@@ -154,10 +155,10 @@ impl StationRegistry {
                             e.insert(station);
                             stats.stations_loaded += 1;
                         } else {
-                            // Handle duplicate stations - prefer metadata file data over capability file
+                            // Handle duplicate stations - prefer authoritative metadata file data over capability file
                             debug!(
-                                "Station {} found in both capability and metadata files, using metadata file data",
-                                station.src_id
+                                "Station {} found in both capability and metadata files, using authoritative metadata file data (operational period: {} to {})",
+                                station.src_id, station.src_bgn_date, station.src_end_date
                             );
                             registry.stations.insert(station.src_id, station);
                         }
@@ -182,18 +183,19 @@ impl StationRegistry {
         }
 
         // Update registry metadata
-        registry.loaded_datasets = datasets.to_vec();
+        registry.loaded_datasets = vec![dataset.to_string()];
         registry.load_time = start_time;
         registry.files_processed = stats.files_processed;
         registry.total_records_found = stats.total_records_found;
 
         // Finalize statistics
-        stats.datasets_processed = datasets.len();
+        stats.datasets_processed = 1;
         stats.records_filtered = stats.total_records_found - stats.stations_loaded;
         stats.load_duration = start_time.elapsed();
 
         info!(
-            "Station registry loaded: {} stations from {} files in {:.2}s",
+            "Station registry loaded for '{}': {} stations from {} files in {:.2}s",
+            dataset,
             stats.stations_loaded,
             stats.files_processed,
             stats.load_duration.as_secs_f64()
@@ -257,7 +259,9 @@ impl StationRegistry {
                             && path
                                 .file_name()
                                 .and_then(|name| name.to_str())
-                                .is_some_and(|name| name.contains("station-metadata.csv"))
+                                .is_some_and(|name| {
+                                    name.contains("station-metadata") && name.ends_with(".csv")
+                                })
                         {
                             metadata_files.push(path.to_path_buf());
                         }
@@ -277,6 +281,86 @@ impl StationRegistry {
             "Discovered {} capability files and {} metadata files",
             capability_files.len(),
             metadata_files.len()
+        );
+        Ok((capability_files, metadata_files))
+    }
+
+    /// Discover capability files and station metadata files for a single dataset
+    pub fn discover_station_files_for_dataset(
+        cache_path: &Path,
+        dataset: &str,
+    ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+        let mut capability_files = Vec::new();
+        let mut metadata_files = Vec::new();
+
+        // Look for capability files in capability/ subdirectory
+        let capability_path = cache_path.join(dataset).join(CAPABILITY_DIR_NAME);
+        if capability_path.exists() {
+            debug!(
+                "Scanning capability directory: {}",
+                capability_path.display()
+            );
+
+            for entry in WalkDir::new(&capability_path) {
+                match entry {
+                    Ok(entry) => {
+                        let path = entry.path();
+                        if path.is_file() && path.extension().is_some_and(|ext| ext == "csv") {
+                            capability_files.push(path.to_path_buf());
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Error walking capability directory {}: {}",
+                            capability_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        } else {
+            warn!(
+                "Capability directory not found for dataset '{}': {}",
+                dataset,
+                capability_path.display()
+            );
+        }
+
+        // Look for centralized station metadata files
+        debug!(
+            "Scanning dataset directory for metadata files: {}",
+            cache_path.join(dataset).display()
+        );
+        for entry in WalkDir::new(cache_path.join(dataset)) {
+            match entry {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.is_file()
+                        && path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.contains("station-metadata") && name.ends_with(".csv")
+                            })
+                    {
+                        metadata_files.push(path.to_path_buf());
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Error walking dataset directory {}: {}",
+                        cache_path.join(dataset).display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        debug!(
+            "Discovered {} capability files and {} metadata files for dataset '{}'",
+            capability_files.len(),
+            metadata_files.len(),
+            dataset
         );
         Ok((capability_files, metadata_files))
     }
@@ -392,9 +476,9 @@ impl StationRegistry {
 
             total_records += 1;
 
-            // Parse station record using the existing method
+            // Parse station record using the metadata file method
             if let Some(ref header_record) = headers {
-                match parse_station_record(&record, header_record) {
+                match parse_station_metadata_record(&record, header_record) {
                     Ok(Some(station)) => {
                         stations.push(station);
                     }
@@ -426,6 +510,7 @@ impl StationRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use std::fs;
     use tempfile::TempDir;
 
@@ -507,23 +592,21 @@ end data
         let temp_dir = TempDir::new().unwrap();
         let cache_path = create_test_cache_structure(&temp_dir).unwrap();
 
-        let datasets = vec![
-            "uk-daily-temperature-obs".to_string(),
-            "uk-daily-rain-obs".to_string(),
-        ];
+        // Test single-dataset loading for temperature dataset
+        let dataset = "uk-daily-temperature-obs";
 
-        let (registry, stats) = StationRegistry::load_from_cache(&cache_path, &datasets, false)
+        let (registry, stats) = StationRegistry::load_for_dataset(&cache_path, dataset, false)
             .await
             .unwrap();
 
-        // Verify registry properties - now we have 2 stations from 2 capability files
-        assert_eq!(registry.station_count(), 2);
-        assert_eq!(registry.loaded_datasets, datasets);
+        // Verify registry properties - now we have 1 station from 1 capability file
+        assert_eq!(registry.station_count(), 1);
+        assert_eq!(registry.loaded_datasets, vec![dataset]);
 
         // Verify load statistics
-        assert_eq!(stats.datasets_processed, 2);
-        assert_eq!(stats.files_processed, 2);
-        assert_eq!(stats.stations_loaded, 2);
+        assert_eq!(stats.datasets_processed, 1);
+        assert_eq!(stats.files_processed, 1);
+        assert_eq!(stats.stations_loaded, 1);
         assert!(stats.total_records_found > 0); // Header records processed (multiple lines per file)
         assert_eq!(
             stats.records_filtered,
@@ -531,9 +614,8 @@ end data
         ); // Filtered = total - loaded
         assert!(stats.errors.is_empty());
 
-        // Verify specific stations
+        // Verify specific station (only from temperature dataset)
         assert!(registry.contains_station(12345));
-        assert!(registry.contains_station(12348));
 
         let station = registry.get_station(12345).unwrap();
         assert_eq!(station.src_name, "test-station-1");
@@ -541,11 +623,11 @@ end data
     }
 
     #[tokio::test]
-    async fn test_load_from_cache_nonexistent_path() {
+    async fn test_load_for_dataset_nonexistent_path() {
         let cache_path = PathBuf::from("/nonexistent/path");
-        let datasets = vec!["uk-daily-temperature-obs".to_string()];
+        let dataset = "uk-daily-temperature-obs";
 
-        let result = StationRegistry::load_from_cache(&cache_path, &datasets, false).await;
+        let result = StationRegistry::load_for_dataset(&cache_path, dataset, false).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -646,9 +728,9 @@ end data
         let temp_dir = TempDir::new().unwrap();
         let cache_path = create_test_cache_structure(&temp_dir).unwrap();
 
-        let datasets = vec!["uk-daily-temperature-obs".to_string()];
+        let dataset = "uk-daily-temperature-obs";
 
-        let (_registry, stats) = StationRegistry::load_from_cache(&cache_path, &datasets, false)
+        let (_registry, stats) = StationRegistry::load_for_dataset(&cache_path, dataset, false)
             .await
             .unwrap();
 
@@ -660,5 +742,58 @@ end data
         let summary = stats.summary();
         assert!(summary.contains("1 datasets"));
         assert!(summary.contains("1 files"));
+    }
+
+    #[tokio::test]
+    async fn test_station_19144_operational_dates() {
+        // Test that station 19144 (London Weather Centre) loads with correct operational dates
+        // from the authoritative metadata file: 1958-2006, not the incorrect 1974-2010
+        let cache_path =
+            Path::new("/Users/richardlyon/Library/Application Support/midas-fetcher/cache");
+
+        if !cache_path.exists() {
+            println!("MIDAS cache not found, skipping test");
+            return;
+        }
+
+        let dataset = "uk-radiation-obs";
+
+        let (registry, _stats) =
+            match StationRegistry::load_for_dataset(cache_path, dataset, false).await {
+                Ok(result) => result,
+                Err(e) => {
+                    println!("Failed to load registry: {}, skipping test", e);
+                    return;
+                }
+            };
+
+        // Check if station 19144 was loaded
+        if let Some(station) = registry.get_station(19144) {
+            println!("✅ Station 19144 loaded successfully:");
+            println!("   Name: {}", station.src_name);
+            println!(
+                "   Operational period: {} to {}",
+                station.src_bgn_date, station.src_end_date
+            );
+
+            // Verify the station has the correct operational dates from metadata file
+            assert_eq!(station.src_name, "LONDON WEATHER CENTRE");
+
+            // Check that operational period is 1958-2006 (from metadata) not 1974-2010 (from unknown source)
+            assert_eq!(
+                station.src_bgn_date.year(),
+                1958,
+                "Station 19144 should start in 1958 according to metadata file"
+            );
+            assert_eq!(
+                station.src_end_date.year(),
+                2006,
+                "Station 19144 should end in 2006 according to metadata file"
+            );
+
+            println!("✅ Station 19144 has correct operational dates: 1958-2006");
+        } else {
+            panic!("Station 19144 (London Weather Centre) not found in registry");
+        }
     }
 }

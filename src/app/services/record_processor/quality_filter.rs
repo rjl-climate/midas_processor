@@ -1,8 +1,9 @@
-//! Quality control filtering for MIDAS observations
+//! Processing quality filtering for MIDAS observations
 //!
-//! This module provides simple quality control filtering based on configuration settings.
-//! Note: This does NOT interpret original MIDAS QC flags, only applies basic filtering
-//! based on configuration and processing metadata.
+//! This module provides processing-level quality control filtering that only removes
+//! observations with critical processing errors. ALL MIDAS data-level quality indicators
+//! (version_num, quality flags, rec_st_ind) are preserved and passed through without
+//! interpretation, in accordance with the pass-through directive.
 
 use crate::app::models::{Observation, ProcessingFlag};
 use crate::config::QualityControlConfig;
@@ -10,22 +11,21 @@ use tracing::{debug, info};
 
 use super::stats::ProcessingStats;
 
-/// Apply quality control filters to observations
+/// Apply processing quality filters to observations
 ///
-/// Filters observations based on the quality control configuration.
-/// Note: This does NOT interpret original MIDAS QC flags, only applies
-/// simple filtering based on configuration settings.
+/// Filters observations based ONLY on critical processing errors.
+/// ALL MIDAS data-level quality indicators are preserved without interpretation.
 ///
 /// # Arguments
 ///
 /// * `observations` - Input observations to filter
-/// * `quality_config` - Quality control configuration
+/// * `quality_config` - Quality control configuration (for processing requirements only)
 /// * `stats` - Mutable reference to processing statistics
 ///
 /// # Returns
 ///
-/// Vector of observations that pass quality control filters
-pub fn apply_quality_filters(
+/// Vector of observations that pass processing quality filters
+pub fn apply_processing_filters(
     observations: Vec<Observation>,
     quality_config: &QualityControlConfig,
     stats: &mut ProcessingStats,
@@ -34,7 +34,7 @@ pub fn apply_quality_filters(
     let mut filtered_out = 0;
 
     for observation in observations {
-        if passes_quality_filters(&observation, quality_config, stats) {
+        if passes_processing_filters(&observation, quality_config, stats) {
             filtered.push(observation);
         } else {
             filtered_out += 1;
@@ -42,7 +42,7 @@ pub fn apply_quality_filters(
     }
 
     info!(
-        "Quality filtering complete: {} -> {} observations ({} filtered out)",
+        "Processing filtering complete: {} -> {} observations ({} filtered out)",
         stats.deduplicated,
         filtered.len(),
         filtered_out
@@ -51,50 +51,56 @@ pub fn apply_quality_filters(
     filtered
 }
 
-/// Check if an observation passes quality control filters
+/// Check if an observation passes processing quality filters
+///
+/// Only filters based on critical processing errors. ALL MIDAS data-level quality
+/// indicators (version_num, quality flags, rec_st_ind) are preserved.
 ///
 /// # Arguments
 ///
 /// * `observation` - Observation to check
-/// * `quality_config` - Quality control configuration
+/// * `quality_config` - Quality control configuration (processing requirements only)
 /// * `stats` - Mutable reference to processing statistics for error tracking
 ///
 /// # Returns
 ///
-/// True if observation passes all quality filters
-pub fn passes_quality_filters(
+/// True if observation passes all processing filters
+pub fn passes_processing_filters(
     observation: &Observation,
     quality_config: &QualityControlConfig,
     _stats: &mut ProcessingStats,
 ) -> bool {
-    // Check quality control version requirement
-    if observation.version_num < quality_config.min_quality_version {
+    // Check for critical processing errors only
+    if has_critical_processing_errors(observation) {
         debug!(
-            "Observation {} filtered out: version {} below minimum {}",
-            observation.observation_id, observation.version_num, quality_config.min_quality_version
-        );
-        return false;
-    }
-
-    // Check if observation has any usable measurements
-    // We apply minimal filtering - most QC interpretation is left to downstream
-    if observation.measurements.is_empty() {
-        debug!(
-            "Observation {} filtered out: no measurements",
+            "Observation {} filtered out: critical processing error",
             observation.observation_id
         );
         return false;
     }
 
-    // Check for critical processing errors
-    if observation.get_processing_flag("station") == Some(ProcessingFlag::StationMissing) {
-        // Allow observations with missing stations through if configured to be lenient
-        // This could be made configurable in the future
+    // Check if observation has any measurements at all (if configured)
+    // (Empty measurements indicate a parsing or processing failure)
+    if quality_config.exclude_empty_measurements && observation.measurements.is_empty() {
         debug!(
-            "Observation {} has missing station metadata but allowed through",
+            "Observation {} filtered out: no measurements (processing failure)",
             observation.observation_id
         );
+        return false;
     }
+
+    // Check station metadata requirement (if configured)
+    if quality_config.require_station_metadata
+        && observation.get_processing_flag("station") == Some(ProcessingFlag::StationMissing)
+    {
+        debug!(
+            "Observation {} filtered out: missing station metadata (required by config)",
+            observation.observation_id
+        );
+        return false;
+    }
+
+    // All MIDAS quality indicators (version_num, quality flags) are preserved
 
     true
 }
@@ -130,40 +136,33 @@ pub fn has_critical_processing_errors(observation: &Observation) -> bool {
     false
 }
 
-/// Get quality filtering statistics for a collection of observations
+/// Get processing filter statistics for a collection of observations
 ///
 /// # Arguments
 ///
 /// * `observations` - Observations to analyze
-/// * `quality_config` - Quality control configuration
+/// * `_quality_config` - Quality control configuration (unused for MIDAS data pass-through)
 ///
 /// # Returns
 ///
-/// Tuple of (total, would_pass, version_failures, no_measurements, critical_errors)
-pub fn get_quality_filter_stats(
+/// Tuple of (total, would_pass, no_measurements, critical_errors)
+pub fn get_processing_filter_stats(
     observations: &[Observation],
-    quality_config: &QualityControlConfig,
-) -> (usize, usize, usize, usize, usize) {
+    _quality_config: &QualityControlConfig,
+) -> (usize, usize, usize, usize) {
     let total = observations.len();
     let mut would_pass = 0;
-    let mut version_failures = 0;
     let mut no_measurements = 0;
     let mut critical_errors = 0;
 
     for observation in observations {
-        // Check version requirement
-        if observation.version_num < quality_config.min_quality_version {
-            version_failures += 1;
-            continue;
-        }
-
-        // Check measurements
+        // Check measurements (empty indicates processing failure)
         if observation.measurements.is_empty() {
             no_measurements += 1;
             continue;
         }
 
-        // Check critical errors
+        // Check critical processing errors
         if has_critical_processing_errors(observation) {
             critical_errors += 1;
             continue;
@@ -172,19 +171,14 @@ pub fn get_quality_filter_stats(
         would_pass += 1;
     }
 
-    (
-        total,
-        would_pass,
-        version_failures,
-        no_measurements,
-        critical_errors,
-    )
+    (total, would_pass, no_measurements, critical_errors)
 }
 
-/// Check if observation has sufficient quality for analysis
+/// Check if observation has sufficient processing quality for analysis
 ///
-/// This is a more permissive check than `passes_quality_filters` and can be used
+/// This is a more permissive check than `passes_processing_filters` and can be used
 /// for determining if an observation might be useful for some types of analysis.
+/// Note: This only checks processing quality, not MIDAS data quality indicators.
 ///
 /// # Arguments
 ///
@@ -192,27 +186,27 @@ pub fn get_quality_filter_stats(
 ///
 /// # Returns
 ///
-/// True if observation has basic quality for analysis
+/// True if observation has basic processing quality for analysis
 pub fn has_analysis_quality(observation: &Observation) -> bool {
-    // Must have at least one measurement
+    // Must have at least one measurement (processing requirement)
     if observation.measurements.is_empty() {
         return false;
     }
 
-    // Must have valid station metadata (even if missing initially)
-    if observation.station.src_name.starts_with("UNKNOWN_STATION_") {
-        return false;
-    }
+    // Station metadata is now guaranteed to be valid by strict parsing
+    // No need to check for placeholder patterns
 
     // Must not have critical processing errors
     if has_critical_processing_errors(observation) {
         return false;
     }
 
+    // All MIDAS data quality indicators are preserved regardless
+
     true
 }
 
-/// Get summary of quality issues in a collection of observations
+/// Get summary of processing quality issues in a collection of observations
 ///
 /// # Arguments
 ///
@@ -220,8 +214,8 @@ pub fn has_analysis_quality(observation: &Observation) -> bool {
 ///
 /// # Returns
 ///
-/// String summary of quality issues found
-pub fn get_quality_summary(observations: &[Observation]) -> String {
+/// String summary of processing quality issues found (data quality preserved)
+pub fn get_processing_quality_summary(observations: &[Observation]) -> String {
     let total = observations.len();
     let with_measurements = observations
         .iter()
@@ -237,10 +231,11 @@ pub fn get_quality_summary(observations: &[Observation]) -> String {
         .count();
 
     format!(
-        "Quality Summary: {total} observations | \
+        "Processing Quality Summary: {total} observations | \
          {with_measurements} have measurements ({:.1}%) | \
          {with_station_data} have station data ({:.1}%) | \
-         {with_processing_errors} have critical errors ({:.1}%)",
+         {with_processing_errors} have critical processing errors ({:.1}%) | \
+         ALL MIDAS data quality indicators preserved",
         (with_measurements as f64 / total as f64) * 100.0,
         (with_station_data as f64 / total as f64) * 100.0,
         (with_processing_errors as f64 / total as f64) * 100.0

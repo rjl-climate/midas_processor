@@ -218,6 +218,44 @@ impl Station {
             _ => {} // Both Some or both None is valid
         }
 
+        // Validate against placeholder/fake data patterns
+        if self.src_name.contains("UNKNOWN") || self.src_name.contains("PLACEHOLDER") {
+            return Err(Error::data_validation(format!(
+                "Station name '{}' appears to be placeholder data",
+                self.src_name
+            )));
+        }
+
+        if self.authority.contains("UNKNOWN") || self.authority.contains("PLACEHOLDER") {
+            return Err(Error::data_validation(format!(
+                "Station authority '{}' appears to be placeholder data",
+                self.authority
+            )));
+        }
+
+        if self.historic_county.contains("UNKNOWN") || self.historic_county.contains("PLACEHOLDER")
+        {
+            return Err(Error::data_validation(format!(
+                "Station historic county '{}' appears to be placeholder data",
+                self.historic_county
+            )));
+        }
+
+        // Validate coordinates are not suspicious (0,0) or other placeholder values
+        if self.high_prcn_lat == 0.0 && self.high_prcn_lon == 0.0 {
+            return Err(Error::data_validation(
+                "Station coordinates (0.0, 0.0) appear to be placeholder data".to_string(),
+            ));
+        }
+
+        // Additional validation for clearly invalid coordinates
+        if self.high_prcn_lat.abs() < 1e-6 && self.high_prcn_lon.abs() < 1e-6 {
+            return Err(Error::data_validation(
+                "Station coordinates appear to be placeholder data (too close to origin)"
+                    .to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -301,12 +339,12 @@ pub struct Observation {
     /// These track our processing operations and are separate from original MIDAS QC flags
     pub processing_flags: HashMap<String, ProcessingFlag>,
 
-    // Processing metadata
-    /// Met Office processing timestamp
-    pub meto_stmp_time: DateTime<Utc>,
+    // Processing metadata (optional - may be missing in historical data)
+    /// Met Office processing timestamp (None if missing in historical data)
+    pub meto_stmp_time: Option<DateTime<Utc>>,
 
-    /// MIDAS processing elapsed time indicator
-    pub midas_stmp_etime: i32,
+    /// MIDAS processing elapsed time indicator (None if missing in historical data)
+    pub midas_stmp_etime: Option<i32>,
 }
 
 impl Observation {
@@ -325,8 +363,8 @@ impl Observation {
         measurements: HashMap<String, f64>,
         quality_flags: HashMap<String, String>,
         processing_flags: HashMap<String, ProcessingFlag>,
-        meto_stmp_time: DateTime<Utc>,
-        midas_stmp_etime: i32,
+        meto_stmp_time: Option<DateTime<Utc>>,
+        midas_stmp_etime: Option<i32>,
     ) -> Result<Self> {
         let observation = Self {
             ob_end_time,
@@ -362,13 +400,9 @@ impl Observation {
         // Note: observation_id and station_id can be different - this is valid in MIDAS
         // observation_id identifies the measurement series, station_id identifies the station
 
-        // Validate record status indicator against all known valid values
-        if !record_status::ALL_VALID_VALUES.contains(&self.rec_st_ind) {
-            return Err(Error::data_validation(format!(
-                "Invalid record status indicator {}: must be one of the valid MIDAS record status values",
-                self.rec_st_ind
-            )));
-        }
+        // Note: rec_st_ind (record status indicator) is a MIDAS quality control flag
+        // All MIDAS QC flags are passed through without interpretation per directive
+        // to avoid code complexity and maintenance issues
 
         // Validate observation hour count is positive
         if self.ob_hour_count <= 0 {
@@ -378,14 +412,8 @@ impl Observation {
             )));
         }
 
-        // Validate quality control version
-        if self.version_num < constants::MIN_QUALITY_VERSION {
-            return Err(Error::data_validation(format!(
-                "Quality control version {} is below minimum version {}",
-                self.version_num,
-                constants::MIN_QUALITY_VERSION
-            )));
-        }
+        // Note: version_num is a MIDAS quality indicator that is preserved without validation
+        // All MIDAS quality indicators are passed through according to the pass-through directive
 
         // Validate observation time is within station operational period
         if !self.station.is_active(self.ob_end_time) {
@@ -396,6 +424,12 @@ impl Observation {
         }
 
         // Validate required fields
+        if self.observation_id.trim().is_empty() {
+            return Err(Error::data_validation(
+                "Observation ID cannot be empty".to_string(),
+            ));
+        }
+
         if self.id_type.trim().is_empty() {
             return Err(Error::data_validation(
                 "ID type cannot be empty".to_string(),
@@ -628,8 +662,8 @@ mod tests {
             east_grid_ref: Some(530000),
             north_grid_ref: Some(180000),
             grid_ref_type: Some("OSGB".to_string()),
-            src_bgn_date: Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap(),
-            src_end_date: Utc.with_ymd_and_hms(2099, 12, 31, 23, 59, 59).unwrap(),
+            src_bgn_date: Utc.with_ymd_and_hms(1800, 1, 1, 0, 0, 0).unwrap(),
+            src_end_date: Utc.with_ymd_and_hms(2100, 12, 31, 23, 59, 59).unwrap(),
             authority: "Met Office".to_string(),
             historic_county: "Greater London".to_string(),
             height_meters: 25.0,
@@ -664,8 +698,8 @@ mod tests {
             measurements,
             quality_flags,
             processing_flags,
-            meto_stmp_time: Utc.with_ymd_and_hms(2023, 6, 15, 13, 0, 0).unwrap(),
-            midas_stmp_etime: 3600,
+            meto_stmp_time: Some(Utc.with_ymd_and_hms(2023, 6, 15, 13, 0, 0).unwrap()),
+            midas_stmp_etime: Some(3600),
         }
     }
 
@@ -705,7 +739,7 @@ mod tests {
             let mut station = create_test_station();
 
             // Start date after end date should fail
-            station.src_end_date = Utc.with_ymd_and_hms(1999, 12, 31, 23, 59, 59).unwrap();
+            station.src_end_date = Utc.with_ymd_and_hms(1750, 12, 31, 23, 59, 59).unwrap();
             assert!(station.validate().is_err());
         }
 
@@ -756,7 +790,7 @@ mod tests {
             assert!(station.is_active(test_time));
 
             // Test point before operational period
-            let before_time = Utc.with_ymd_and_hms(1999, 1, 1, 0, 0, 0).unwrap();
+            let before_time = Utc.with_ymd_and_hms(1750, 1, 1, 0, 0, 0).unwrap();
             assert!(!station.is_active(before_time));
 
             // Test period overlap
@@ -777,6 +811,36 @@ mod tests {
             // Test grid reference
             let grid_ref = station.grid_reference().unwrap();
             assert_eq!(grid_ref, (530000, 180000, "OSGB"));
+        }
+
+        #[test]
+        fn test_station_placeholder_detection() {
+            let mut station = create_test_station();
+
+            // Test placeholder name detection
+            station.src_name = "UNKNOWN_STATION_123".to_string();
+            assert!(station.validate().is_err());
+
+            // Test placeholder authority detection
+            station.src_name = "TEST STATION".to_string();
+            station.authority = "UNKNOWN".to_string();
+            assert!(station.validate().is_err());
+
+            // Test placeholder county detection
+            station.authority = "Met Office".to_string();
+            station.historic_county = "UNKNOWN".to_string();
+            assert!(station.validate().is_err());
+
+            // Test placeholder coordinates detection
+            station.historic_county = "Greater London".to_string();
+            station.high_prcn_lat = 0.0;
+            station.high_prcn_lon = 0.0;
+            assert!(station.validate().is_err());
+
+            // Test near-zero coordinates detection
+            station.high_prcn_lat = 0.0000001;
+            station.high_prcn_lon = 0.0000001;
+            assert!(station.validate().is_err());
         }
     }
 
@@ -800,10 +864,18 @@ mod tests {
         }
 
         #[test]
-        fn test_observation_invalid_record_status() {
+        fn test_observation_rec_st_ind_passthrough() {
+            // Test that rec_st_ind values are passed through without validation
+            // per MIDAS QC pass-through directive to avoid code complexity
             let mut observation = create_test_observation();
-            observation.rec_st_ind = 5; // Invalid status
-            assert!(observation.validate().is_err());
+            observation.rec_st_ind = 1023; // Previously "invalid" value now accepted
+            assert!(observation.validate().is_ok());
+
+            observation.rec_st_ind = 5; // Any value should be accepted
+            assert!(observation.validate().is_ok());
+
+            observation.rec_st_ind = 9999; // Including unknown values
+            assert!(observation.validate().is_ok());
         }
 
         #[test]
@@ -816,7 +888,7 @@ mod tests {
         #[test]
         fn test_observation_time_outside_station_period() {
             let mut observation = create_test_observation();
-            observation.ob_end_time = Utc.with_ymd_and_hms(1990, 1, 1, 0, 0, 0).unwrap();
+            observation.ob_end_time = Utc.with_ymd_and_hms(1750, 1, 1, 0, 0, 0).unwrap();
             assert!(observation.validate().is_err());
         }
 
@@ -859,6 +931,177 @@ mod tests {
             // Different station
             obs2.observation_id = "99999".to_string();
             assert!(!obs1.supersedes(&obs2));
+        }
+
+        #[test]
+        fn test_observation_with_missing_administrative_fields() {
+            // Test creating observation with None administrative timestamp fields
+            let station = create_test_station();
+            let mut measurements = HashMap::new();
+            measurements.insert("air_temperature".to_string(), 15.5);
+
+            let mut quality_flags = HashMap::new();
+            quality_flags.insert("air_temperature".to_string(), "0".to_string());
+
+            let mut processing_flags = HashMap::new();
+            processing_flags.insert("air_temperature".to_string(), ProcessingFlag::ParseOk);
+            processing_flags.insert("station".to_string(), ProcessingFlag::StationFound);
+
+            let observation = Observation::new(
+                Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
+                1,
+                "test_obs".to_string(),
+                12345,
+                "SRCE".to_string(),
+                "UK-DAILY-TEMPERATURE-OBS".to_string(),
+                record_status::ORIGINAL as i32,
+                1,
+                station,
+                measurements,
+                quality_flags,
+                processing_flags,
+                None, // Missing meto_stmp_time
+                None, // Missing midas_stmp_etime
+            );
+
+            assert!(observation.is_ok());
+            let obs = observation.unwrap();
+            assert_eq!(obs.meto_stmp_time, None);
+            assert_eq!(obs.midas_stmp_etime, None);
+            assert!(obs.validate().is_ok());
+        }
+
+        #[test]
+        fn test_observation_with_present_administrative_fields() {
+            // Test creating observation with Some administrative timestamp fields
+            let station = create_test_station();
+            let mut measurements = HashMap::new();
+            measurements.insert("air_temperature".to_string(), 15.5);
+
+            let mut quality_flags = HashMap::new();
+            quality_flags.insert("air_temperature".to_string(), "0".to_string());
+
+            let mut processing_flags = HashMap::new();
+            processing_flags.insert("air_temperature".to_string(), ProcessingFlag::ParseOk);
+            processing_flags.insert("station".to_string(), ProcessingFlag::StationFound);
+
+            let meto_time = Utc.with_ymd_and_hms(2023, 6, 15, 13, 30, 0).unwrap();
+            let midas_etime = 7200;
+
+            let observation = Observation::new(
+                Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
+                1,
+                "test_obs".to_string(),
+                12345,
+                "SRCE".to_string(),
+                "UK-DAILY-TEMPERATURE-OBS".to_string(),
+                record_status::ORIGINAL as i32,
+                1,
+                station,
+                measurements,
+                quality_flags,
+                processing_flags,
+                Some(meto_time),   // Present meto_stmp_time
+                Some(midas_etime), // Present midas_stmp_etime
+            );
+
+            assert!(observation.is_ok());
+            let obs = observation.unwrap();
+            assert_eq!(obs.meto_stmp_time, Some(meto_time));
+            assert_eq!(obs.midas_stmp_etime, Some(midas_etime));
+            assert!(obs.validate().is_ok());
+        }
+
+        #[test]
+        fn test_observation_mixed_administrative_fields() {
+            // Test creating observation with only one administrative field present
+            let station = create_test_station();
+            let mut measurements = HashMap::new();
+            measurements.insert("air_temperature".to_string(), 15.5);
+
+            let mut quality_flags = HashMap::new();
+            quality_flags.insert("air_temperature".to_string(), "0".to_string());
+
+            let mut processing_flags = HashMap::new();
+            processing_flags.insert("air_temperature".to_string(), ProcessingFlag::ParseOk);
+            processing_flags.insert("station".to_string(), ProcessingFlag::StationFound);
+
+            let meto_time = Utc.with_ymd_and_hms(2023, 6, 15, 13, 30, 0).unwrap();
+
+            let observation = Observation::new(
+                Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
+                1,
+                "test_obs".to_string(),
+                12345,
+                "SRCE".to_string(),
+                "UK-DAILY-TEMPERATURE-OBS".to_string(),
+                record_status::ORIGINAL as i32,
+                1,
+                station,
+                measurements,
+                quality_flags,
+                processing_flags,
+                Some(meto_time), // Present meto_stmp_time
+                None,            // Missing midas_stmp_etime
+            );
+
+            assert!(observation.is_ok());
+            let obs = observation.unwrap();
+            assert_eq!(obs.meto_stmp_time, Some(meto_time));
+            assert_eq!(obs.midas_stmp_etime, None);
+            assert!(obs.validate().is_ok());
+        }
+
+        #[test]
+        fn test_observation_core_validation_still_strict() {
+            // Ensure that making administrative fields optional doesn't affect core validation
+            let station = create_test_station();
+            let measurements = HashMap::new(); // Empty measurements OK
+            let quality_flags = HashMap::new();
+            let processing_flags = HashMap::new();
+
+            // Test that core fields are still required and validated
+
+            // Empty observation ID should still fail
+            let result = Observation::new(
+                Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
+                1,
+                "".to_string(), // Empty observation ID
+                12345,
+                "SRCE".to_string(),
+                "UK-DAILY-TEMPERATURE-OBS".to_string(),
+                record_status::ORIGINAL as i32,
+                1,
+                station.clone(),
+                measurements.clone(),
+                quality_flags.clone(),
+                processing_flags.clone(),
+                None, // Administrative fields can be None
+                None,
+            );
+            assert!(result.is_err()); // Should fail due to empty observation ID
+
+            // Station ID mismatch should still fail
+            let mut wrong_station = station.clone();
+            wrong_station.src_id = 99999; // Different ID
+
+            let result = Observation::new(
+                Utc.with_ymd_and_hms(2023, 6, 15, 12, 0, 0).unwrap(),
+                1,
+                "valid_id".to_string(),
+                12345, // Station ID doesn't match wrong_station.src_id
+                "SRCE".to_string(),
+                "UK-DAILY-TEMPERATURE-OBS".to_string(),
+                record_status::ORIGINAL as i32,
+                1,
+                wrong_station,
+                measurements,
+                quality_flags,
+                processing_flags,
+                None, // Administrative fields can be None
+                None,
+            );
+            assert!(result.is_err()); // Should fail due to station ID mismatch
         }
     }
 

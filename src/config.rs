@@ -9,9 +9,8 @@
 //! The configuration follows the specifications defined in PLANNING.md.
 
 use crate::constants::{
-    DEFAULT_DATASETS, DEFAULT_INCLUDE_SUSPECT, DEFAULT_INCLUDE_UNCHECKED, DEFAULT_MEMORY_LIMIT_GB,
-    DEFAULT_PARALLEL_WORKERS, MIN_QUALITY_VERSION, PARQUET_COMPRESSION, PARQUET_PAGE_SIZE_MB,
-    PARQUET_ROW_GROUP_SIZE,
+    DEFAULT_DATASETS, DEFAULT_MEMORY_LIMIT_GB, DEFAULT_PARALLEL_WORKERS, PARQUET_COMPRESSION,
+    PARQUET_PAGE_SIZE_MB, PARQUET_ROW_GROUP_SIZE,
 };
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -74,20 +73,19 @@ pub struct ProcessingConfig {
     pub force_overwrite: bool,
 }
 
-/// Quality control configuration options
+/// Processing quality control configuration options
+///
+/// Note: This configuration only controls processing-level quality checks.
+/// ALL MIDAS data-level quality indicators are preserved without interpretation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityControlConfig {
-    /// Include suspect quality data in output
-    #[serde(default = "default_include_suspect")]
-    pub include_suspect: bool,
+    /// Require valid station metadata for all observations
+    #[serde(default = "default_require_station_metadata")]
+    pub require_station_metadata: bool,
 
-    /// Include unchecked quality data in output
-    #[serde(default = "default_include_unchecked")]
-    pub include_unchecked: bool,
-
-    /// Minimum quality control version to accept
-    #[serde(default = "default_min_quality_version")]
-    pub min_quality_version: i32,
+    /// Exclude observations with no measurements (processing failure indicator)
+    #[serde(default = "default_exclude_empty_measurements")]
+    pub exclude_empty_measurements: bool,
 }
 
 /// Parquet output configuration options
@@ -159,16 +157,12 @@ fn default_cache_path() -> PathBuf {
     }
 }
 
-fn default_include_suspect() -> bool {
-    DEFAULT_INCLUDE_SUSPECT
+fn default_require_station_metadata() -> bool {
+    true // Require valid station metadata by default
 }
 
-fn default_include_unchecked() -> bool {
-    DEFAULT_INCLUDE_UNCHECKED
-}
-
-fn default_min_quality_version() -> i32 {
-    MIN_QUALITY_VERSION
+fn default_exclude_empty_measurements() -> bool {
+    true // Exclude empty measurements by default (indicates processing failure)
 }
 
 fn default_compression() -> String {
@@ -206,9 +200,8 @@ fn default_log_format() -> String {
 impl Default for QualityControlConfig {
     fn default() -> Self {
         Self {
-            include_suspect: default_include_suspect(),
-            include_unchecked: default_include_unchecked(),
-            min_quality_version: default_min_quality_version(),
+            require_station_metadata: default_require_station_metadata(),
+            exclude_empty_measurements: default_exclude_empty_measurements(),
         }
     }
 }
@@ -372,11 +365,13 @@ impl Config {
         }
 
         // Quality control environment variables
-        if let Ok(include_suspect) = std::env::var("MIDAS_INCLUDE_SUSPECT") {
-            self.quality_control.include_suspect = include_suspect.parse().unwrap_or(false);
+        if let Ok(require_station_metadata) = std::env::var("MIDAS_REQUIRE_STATION_METADATA") {
+            self.quality_control.require_station_metadata =
+                require_station_metadata.parse().unwrap_or(true);
         }
-        if let Ok(include_unchecked) = std::env::var("MIDAS_INCLUDE_UNCHECKED") {
-            self.quality_control.include_unchecked = include_unchecked.parse().unwrap_or(false);
+        if let Ok(exclude_empty_measurements) = std::env::var("MIDAS_EXCLUDE_EMPTY_MEASUREMENTS") {
+            self.quality_control.exclude_empty_measurements =
+                exclude_empty_measurements.parse().unwrap_or(true);
         }
 
         // Performance environment variables
@@ -423,12 +418,8 @@ impl Config {
             ));
         }
 
-        // Validate quality control settings
-        if self.quality_control.min_quality_version < 0 {
-            return Err(Error::configuration(
-                "Minimum quality version must be non-negative".to_string(),
-            ));
-        }
+        // Note: Processing quality control validation
+        // MIDAS data quality indicators are not validated here as they are preserved
 
         // Validate parquet settings
         if self.parquet.row_group_size == 0 {
@@ -548,9 +539,8 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let qc_config = QualityControlConfig::default();
-        assert_eq!(qc_config.include_suspect, DEFAULT_INCLUDE_SUSPECT);
-        assert_eq!(qc_config.include_unchecked, DEFAULT_INCLUDE_UNCHECKED);
-        assert_eq!(qc_config.min_quality_version, MIN_QUALITY_VERSION);
+        assert!(qc_config.require_station_metadata);
+        assert!(qc_config.exclude_empty_measurements);
 
         let parquet_config = ParquetConfig::default();
         assert_eq!(parquet_config.compression, PARQUET_COMPRESSION);
@@ -599,13 +589,13 @@ mod tests {
         let mut config2 = Config::new(input_path.clone(), output_path.clone());
 
         config2.processing.dry_run = true;
-        config2.quality_control.include_suspect = true;
+        config2.quality_control.require_station_metadata = false;
         config2.performance.parallel_workers = 16;
 
         config1.merge(config2).unwrap();
 
         assert!(config1.processing.dry_run);
-        assert!(config1.quality_control.include_suspect);
+        assert!(!config1.quality_control.require_station_metadata);
         assert_eq!(config1.performance.parallel_workers, 16);
     }
 
@@ -620,7 +610,7 @@ mod tests {
         // Set environment variables
         unsafe {
             env::set_var("MIDAS_DRY_RUN", "true");
-            env::set_var("MIDAS_INCLUDE_SUSPECT", "true");
+            env::set_var("MIDAS_REQUIRE_STATION_METADATA", "false");
             env::set_var("MIDAS_PARALLEL_WORKERS", "12");
             env::set_var("MIDAS_LOG_LEVEL", "debug");
         }
@@ -628,14 +618,14 @@ mod tests {
         config.merge_env().unwrap();
 
         assert!(config.processing.dry_run);
-        assert!(config.quality_control.include_suspect);
+        assert!(!config.quality_control.require_station_metadata);
         assert_eq!(config.performance.parallel_workers, 12);
         assert_eq!(config.logging.level, "debug");
 
         // Clean up environment variables
         unsafe {
             env::remove_var("MIDAS_DRY_RUN");
-            env::remove_var("MIDAS_INCLUDE_SUSPECT");
+            env::remove_var("MIDAS_REQUIRE_STATION_METADATA");
             env::remove_var("MIDAS_PARALLEL_WORKERS");
             env::remove_var("MIDAS_LOG_LEVEL");
         }
@@ -666,8 +656,8 @@ datasets = ["uk-daily-temperature-obs"]
 dry_run = true
 
 [quality_control]
-include_suspect = true
-min_quality_version = 2
+require_station_metadata = false
+exclude_empty_measurements = true
 
 [performance]
 parallel_workers = 6
@@ -687,8 +677,8 @@ memory_limit_gb = 8
         );
         assert_eq!(config.processing.datasets, vec!["uk-daily-temperature-obs"]);
         assert!(config.processing.dry_run);
-        assert!(config.quality_control.include_suspect);
-        assert_eq!(config.quality_control.min_quality_version, 2);
+        assert!(!config.quality_control.require_station_metadata);
+        assert!(config.quality_control.exclude_empty_measurements);
         assert_eq!(config.performance.parallel_workers, 6);
         assert_eq!(config.performance.memory_limit_gb, 8);
     }

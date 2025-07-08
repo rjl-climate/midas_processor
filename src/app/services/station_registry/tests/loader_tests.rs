@@ -20,29 +20,26 @@ async fn test_load_from_cache_success() {
     let temp_dir = TempDir::new().unwrap();
     let cache_path = create_test_cache_structure(&temp_dir).unwrap();
 
-    let datasets = vec![
-        "uk-daily-temperature-obs".to_string(),
-        "uk-daily-rain-obs".to_string(),
-    ];
+    // Test single-dataset loading for temperature dataset
+    let dataset = "uk-daily-temperature-obs";
 
-    let (registry, stats) = StationRegistry::load_from_cache(&cache_path, &datasets, false)
+    let (registry, stats) = StationRegistry::load_for_dataset(&cache_path, dataset, false)
         .await
         .unwrap();
 
-    // Verify registry properties
-    assert_eq!(registry.station_count(), 2);
-    assert_eq!(registry.loaded_datasets, datasets);
+    // Verify registry properties - single dataset loading
+    assert_eq!(registry.station_count(), 1);
+    assert_eq!(registry.loaded_datasets, vec![dataset]);
 
     // Verify load statistics
-    assert_eq!(stats.datasets_processed, 2);
-    assert_eq!(stats.files_processed, 2);
-    assert_eq!(stats.stations_loaded, 2);
+    assert_eq!(stats.datasets_processed, 1);
+    assert_eq!(stats.files_processed, 1);
+    assert_eq!(stats.stations_loaded, 1);
     assert!(stats.total_records_found > 0);
     assert!(stats.errors.is_empty());
 
-    // Verify specific stations
+    // Verify specific station (only from temperature dataset)
     assert!(registry.contains_station(12345));
-    assert!(registry.contains_station(12348));
 
     let station = registry.get_station(12345).unwrap();
     assert_eq!(station.src_name, "test-station-1");
@@ -50,11 +47,11 @@ async fn test_load_from_cache_success() {
 }
 
 #[tokio::test]
-async fn test_load_from_cache_nonexistent_path() {
+async fn test_load_for_dataset_nonexistent_path() {
     let cache_path = PathBuf::from("/nonexistent/path");
-    let datasets = vec!["uk-daily-temperature-obs".to_string()];
+    let dataset = "uk-daily-temperature-obs";
 
-    let result = StationRegistry::load_from_cache(&cache_path, &datasets, false).await;
+    let result = StationRegistry::load_for_dataset(&cache_path, dataset, false).await;
     assert!(result.is_err());
 }
 
