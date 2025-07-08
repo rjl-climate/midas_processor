@@ -42,10 +42,6 @@ A CLI tool that:
   why: Official CSV parsing tutorial with Serde integration
   critical: Performance optimization with StringRecord and manual deserialization
 
-- url: https://docs.rs/parquet/latest/parquet/arrow/
-  why: Arrow-rs Parquet writer API and best practices
-  critical: ArrowWriter configuration for scientific data
-
 - url: https://help.ceda.ac.uk/article/4982-midas-open-user-guide
   why: MIDAS data structure and organization
   critical: QC versioning and directory hierarchy
@@ -53,10 +49,6 @@ A CLI tool that:
 - url: https://help.ceda.ac.uk/article/105-badc-csv
   why: BADC-CSV format specification
   critical: Header/data section parsing requirements
-
-- url: https://zenodo.org/records/7357335/files/MIDAS_User_Guide_for_UK_Land_Observations.pdf
-  why: Complete MIDAS data format specification
-  critical: Quality control flags and measurement types
 
 - url: https://github.com/rjl-climate/midas_fetcher
   why: Cache structure and organization patterns
@@ -66,13 +58,69 @@ A CLI tool that:
   why: Station metadata and observation record structure
   critical: Data model definitions and join logic
 
-- file: docs/Section_5.md
-  why: Quality control system and flag meanings
-  critical: QC processing logic and data integrity
-
 - file: PLANNING.md
   why: Complete project architecture and requirements
   critical: All technical decisions and data structures
+
+- url: https://docs.rs/parquet/latest/parquet/
+  why: Official Parquet crate documentation with API reference
+  critical: File writing patterns, schema definition, and metadata handling
+
+- url: https://docs.rs/arrow/latest/arrow/
+  why: Arrow data structures and type system integration
+  critical: Schema definition, RecordBatch creation, and data type mapping
+
+- url: https://github.com/apache/arrow-rs/tree/master/parquet/examples
+  why: Real-world Parquet writer implementation examples
+  critical: ArrowWriter setup, batch processing patterns, and error handling
+
+- url: https://parquet.apache.org/docs/file-format/
+  why: Official Parquet format specification
+  critical: Row group organization, column statistics, and encoding options
+
+- url: https://docs.rs/parquet/latest/parquet/file/properties/
+  why: Writer properties and optimization configuration
+  critical: Compression settings, row group sizing, and dictionary encoding
+
+- url: https://github.com/apache/arrow-rs/blob/master/parquet/src/arrow/arrow_writer.rs
+  why: ArrowWriter source code and implementation details
+  critical: Batch writing logic, schema validation, and performance optimizations
+
+- url: https://arrow.apache.org/docs/rust/parquet/index.html
+  why: Arrow Rust Parquet integration guide
+  critical: Schema evolution, partitioning strategies, and metadata preservation
+
+- url: https://docs.rs/arrow/latest/arrow/datatypes/
+  why: Arrow data type system and schema definition
+  critical: Time series data types, nullable fields, and categorical encoding
+
+- url: https://github.com/apache/arrow-rs/tree/master/arrow/examples
+  why: Arrow RecordBatch and Array construction patterns
+  critical: Efficient batch creation for time series data
+
+- url: https://docs.rs/tokio/latest/tokio/fs/
+  why: Async file I/O patterns for large dataset processing
+  critical: Non-blocking writes and concurrent processing strategies
+
+- url: https://polars.rs/posts/parquet_writer/
+  why: Parquet optimization techniques for analytical workloads
+  critical: Column ordering, compression choices, and query optimization
+
+- url: https://docs.rs/serde/latest/serde/
+  why: Serialization patterns for structured weather data
+  critical: Custom deserializers for weather station metadata and measurements
+
+- url: https://github.com/apache/arrow-rs/blob/master/parquet/benches/arrow_writer.rs
+  why: Performance benchmarking patterns and optimization strategies
+  critical: Memory usage optimization and write throughput maximization
+
+- url: https://docs.rs/rayon/latest/rayon/
+  why: Parallel processing for large weather datasets
+  critical: Parallel batch creation and concurrent file writing
+
+- url: https://github.com/pola-rs/polars/blob/main/crates/polars-io/src/parquet/write/
+  why: Advanced Parquet writing patterns and optimizations
+  critical: Partitioned writing, schema management, and data validation
 ```
 
 ### Current Codebase Structure

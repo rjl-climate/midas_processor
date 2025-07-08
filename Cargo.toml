@@ -13,9 +13,9 @@ name = "station-summary"
 path = "src/bin/station-summary.rs"
 
 [dependencies]
-# Core data processing (temporarily disabled due to version conflict)
-# arrow = "48.0"
-# parquet = "48.0"
+# Core data processing for Parquet files
+arrow = { version = "53.0", features = ["csv", "json", "prettyprint"] }
+parquet = { version = "53.0", features = ["arrow", "async"] }
 csv = "1.3"
 
 # Serialization

@@ -3,6 +3,9 @@
 //! This module contains the main command execution logic, progress reporting,
 //! and error handling for the CLI interface.
 
+use crate::app::services::badc_csv_parser::BadcCsvParser;
+use crate::app::services::parquet_writer::{WriterConfig, write_dataset_to_parquet};
+use crate::app::services::record_processor::RecordProcessor;
 use crate::app::services::station_registry::StationRegistry;
 use crate::cli::args::{Args, Commands, OutputFormat, ProcessArgs, StationsArgs, ValidateArgs};
 use crate::config::Config;
@@ -827,32 +830,232 @@ async fn run_dry_run(config: &Config, datasets: &[String]) -> Result<ProcessingS
     Ok(stats)
 }
 
-/// Process a single dataset (placeholder implementation)
-async fn process_dataset(_config: &Config, dataset: &str) -> Result<ProcessingStats> {
-    // This is a placeholder implementation for Task 4
-    // The actual processing logic will be implemented in future tasks
-    // when the station registry, CSV parser, and Parquet writer are available
+/// Process a single dataset with full pipeline
+async fn process_dataset(config: &Config, dataset: &str) -> Result<ProcessingStats> {
+    use std::sync::Arc;
 
-    warn!(
-        "Dataset processing not yet implemented - placeholder for {}",
-        dataset
+    info!("Processing dataset: {}", dataset);
+    let start_time = Instant::now();
+
+    // Build dataset input path
+    let dataset_path = config.processing.input_path.join(dataset);
+    if !dataset_path.exists() {
+        return Err(Error::file_not_found(format!(
+            "Dataset directory not found: {}",
+            dataset_path.display()
+        )));
+    }
+
+    // Load station registry for this dataset
+    info!("Loading station registry for dataset: {}", dataset);
+    let (station_registry, load_stats) =
+        StationRegistry::load_for_dataset(&config.processing.input_path, dataset, false).await?;
+
+    info!(
+        "Station registry loaded: {} stations from {} files in {:.2}s",
+        load_stats.stations_loaded,
+        load_stats.files_processed,
+        load_stats.load_duration.as_secs_f64()
     );
 
-    // Return mock statistics
+    // Create processing components
+    let registry_arc = Arc::new(station_registry);
+    let parser = BadcCsvParser::new(registry_arc.clone());
+    let processor = RecordProcessor::new(registry_arc, config.quality_control.clone());
+
+    // Discover CSV files to process
+    let csv_files = discover_csv_files(&dataset_path)?;
+    info!("Discovered {} CSV files to process", csv_files.len());
+
+    if csv_files.is_empty() {
+        warn!("No CSV files found in dataset: {}", dataset);
+        return Ok(ProcessingStats {
+            datasets_processed: 1,
+            stations_loaded: load_stats.stations_loaded,
+            ..Default::default()
+        });
+    }
+
+    // Process all CSV files and collect observations
+    let mut all_observations = Vec::new();
+    let mut files_processed = 0;
+    let mut total_errors = 0;
+
+    info!("Parsing {} CSV files...", csv_files.len());
+    for csv_file in &csv_files {
+        match parser.parse_file(csv_file).await {
+            Ok(result) => {
+                files_processed += 1;
+                all_observations.extend(result.observations);
+                total_errors += result.stats.errors.len();
+
+                debug!(
+                    "Parsed {}: {} observations, {} errors",
+                    csv_file.display(),
+                    result.stats.observations_parsed,
+                    result.stats.errors.len()
+                );
+            }
+            Err(e) => {
+                error!("Failed to parse {}: {}", csv_file.display(), e);
+                total_errors += 1;
+            }
+        }
+    }
+
+    info!(
+        "Parsing complete: {} observations from {} files",
+        all_observations.len(),
+        files_processed
+    );
+
+    // Process observations (enrichment, deduplication, quality filtering)
+    if !all_observations.is_empty() {
+        info!("Processing {} observations...", all_observations.len());
+        let processing_result = processor.process_observations(all_observations).await?;
+        all_observations = processing_result.observations;
+
+        info!(
+            "Processing complete: {} observations after processing",
+            all_observations.len()
+        );
+    }
+
+    // Write to Parquet
+    let mut output_file_size = 0;
+    let observations_count = all_observations.len();
+
+    if !all_observations.is_empty() {
+        info!(
+            "Writing {} observations to Parquet format...",
+            observations_count
+        );
+
+        // Configure Parquet writer
+        let writer_config = WriterConfig {
+            row_group_size: config.parquet.row_group_size,
+            write_batch_size: 1024,
+            memory_limit_bytes: config.memory_limit_bytes(),
+            enable_dictionary_encoding: true,
+            enable_statistics: true,
+            data_page_size_bytes: config.parquet.page_size_mb * 1024 * 1024,
+            compression: parquet::basic::Compression::SNAPPY,
+        };
+
+        // Write dataset to Parquet
+        let writing_stats = write_dataset_to_parquet(
+            dataset,
+            all_observations,
+            &config.processing.output_path,
+            writer_config,
+        )
+        .await?;
+
+        // Calculate output file size
+        let output_file = config
+            .processing
+            .output_path
+            .join("parquet_files")
+            .join(format!("{}.parquet", dataset));
+
+        if output_file.exists() {
+            if let Ok(metadata) = std::fs::metadata(&output_file) {
+                output_file_size = metadata.len();
+            }
+        }
+
+        info!(
+            "Parquet writing complete: {} observations, {} bytes",
+            writing_stats.observations_written,
+            crate::app::services::parquet_writer::WritingStats::format_bytes(
+                output_file_size as usize
+            )
+        );
+    } else {
+        warn!("No observations to write for dataset: {}", dataset);
+    }
+
+    let processing_time = start_time.elapsed();
+
+    // Return comprehensive statistics
     Ok(ProcessingStats {
-        files_processed: 10,                                             // Mock value
-        stations_loaded: 100,                                            // Mock value
-        observations_processed: 10000,                                   // Mock value
-        output_sizes: vec![(format!("{}.parquet", dataset), 1_000_000)], // Mock 1MB file
-        ..Default::default()
+        datasets_processed: 1,
+        files_processed,
+        stations_loaded: load_stats.stations_loaded,
+        observations_processed: observations_count,
+        errors_encountered: total_errors,
+        processing_time,
+        output_sizes: if output_file_size > 0 {
+            vec![(format!("{}.parquet", dataset), output_file_size)]
+        } else {
+            vec![]
+        },
     })
 }
 
-/// Discover files in a dataset directory (placeholder implementation)
-async fn discover_dataset_files(_input_dir: &std::path::Path) -> Result<usize> {
-    // Placeholder implementation
-    // In future tasks, this will use walkdir to recursively find CSV files
-    Ok(10) // Mock file count
+/// Discover CSV files in a dataset directory
+fn discover_csv_files(dataset_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    use walkdir::WalkDir;
+
+    let mut csv_files = Vec::new();
+
+    // Look for CSV files in qcv-1 subdirectory (latest quality control version)
+    let qcv_dir = dataset_dir.join("qcv-1");
+    if qcv_dir.exists() {
+        for entry in WalkDir::new(&qcv_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("csv") {
+                // Skip capability files - we only want observation data files
+                if !path.to_string_lossy().contains("capability") {
+                    csv_files.push(path.to_path_buf());
+                }
+            }
+        }
+    }
+
+    // If no qcv-1 directory, try qcv-0 (original quality control version)
+    if csv_files.is_empty() {
+        let qcv0_dir = dataset_dir.join("qcv-0");
+        if qcv0_dir.exists() {
+            for entry in WalkDir::new(&qcv0_dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("csv") {
+                    // Skip capability files
+                    if !path.to_string_lossy().contains("capability") {
+                        csv_files.push(path.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort files for consistent processing order
+    csv_files.sort();
+
+    debug!(
+        "Discovered {} CSV files in {}",
+        csv_files.len(),
+        dataset_dir.display()
+    );
+    for file in &csv_files {
+        debug!("  Found: {}", file.display());
+    }
+
+    Ok(csv_files)
+}
+
+/// Discover files in a dataset directory (legacy function for compatibility)
+async fn discover_dataset_files(input_dir: &std::path::Path) -> Result<usize> {
+    let files = discover_csv_files(input_dir)?;
+    Ok(files.len())
 }
 
 /// Check if an error is critical enough to stop processing
@@ -1450,9 +1653,13 @@ mod tests {
         let input_path = temp_dir.path().to_path_buf();
         let output_path = temp_dir.path().join("output");
 
-        // Create mock dataset directory
-        let dataset_dir = input_path.join("uk-daily-temperature-obs");
+        // Create mock dataset directory with proper structure
+        let dataset_dir = input_path.join("uk-daily-temperature-obs").join("qcv-1");
         std::fs::create_dir_all(&dataset_dir).unwrap();
+
+        // Create a mock CSV file
+        let csv_file = dataset_dir.join("test_data.csv");
+        std::fs::write(&csv_file, "mock,csv,data\n1,2,3\n").unwrap();
 
         let config = Config::new(input_path, output_path);
         let datasets = vec!["uk-daily-temperature-obs".to_string()];
