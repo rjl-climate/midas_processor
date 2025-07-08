@@ -2,12 +2,13 @@
 
 use super::*;
 use crate::app::services::record_processor::quality_filter::{
-    apply_quality_filters, get_quality_filter_stats, get_quality_summary, has_analysis_quality,
+    apply_processing_filters, get_processing_filter_stats, get_processing_quality_summary,
+    has_analysis_quality,
 };
 use crate::app::services::record_processor::stats::ProcessingStats;
 
 #[test]
-fn test_apply_quality_filters_permissive_config() {
+fn test_apply_processing_filters_permissive_config() {
     let mut stats = ProcessingStats::new();
     let config = create_permissive_quality_config();
 
@@ -17,15 +18,16 @@ fn test_apply_quality_filters_permissive_config() {
         create_observation_with_parse_failures("obs3", 124),
     ];
 
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
-    // Permissive config should pass all observations
-    assert_eq!(result.len(), 3);
-    assert_eq!(stats.errors, 0);
+    // Permissive config should pass observations without critical errors
+    // obs1 (good station) and obs2 (missing station) pass, but obs3 (parse failures) fails due to critical errors
+    assert_eq!(result.len(), 2);
+    assert_eq!(stats.errors, 0); // Filtering decisions are not counted as errors in stats
 }
 
 #[test]
-fn test_apply_quality_filters_strict_config() {
+fn test_apply_processing_filters_strict_config() {
     let mut stats = ProcessingStats::new();
     let config = create_test_quality_config(); // Strict config
 
@@ -35,31 +37,31 @@ fn test_apply_quality_filters_strict_config() {
         create_observation_with_parse_failures("obs3", 124),
     ];
 
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
-    // Permissive quality filter keeps all structurally valid observations
-    // This is scientifically appropriate for weather data
-    assert_eq!(result.len(), 3);
+    // Strict config filters out observations with missing stations or parse failures
+    // Only observations with good station metadata and no parse failures pass
+    assert_eq!(result.len(), 1);
     assert!(result.iter().any(|obs| obs.observation_id == "obs1"));
-    assert!(result.iter().any(|obs| obs.observation_id == "obs2"));
-    assert!(result.iter().any(|obs| obs.observation_id == "obs3"));
+    assert!(!result.iter().any(|obs| obs.observation_id == "obs2")); // Missing station
+    assert!(!result.iter().any(|obs| obs.observation_id == "obs3")); // Parse failure
     assert_eq!(stats.errors, 0);
 }
 
 #[test]
-fn test_apply_quality_filters_empty_input() {
+fn test_apply_processing_filters_empty_input() {
     let mut stats = ProcessingStats::new();
     let config = create_test_quality_config();
 
     let observations: Vec<Observation> = vec![];
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
     assert_eq!(result.len(), 0);
     assert_eq!(stats.errors, 0);
 }
 
 #[test]
-fn test_apply_quality_filters_all_good_observations() {
+fn test_apply_processing_filters_all_good_observations() {
     let mut stats = ProcessingStats::new();
     let config = create_test_quality_config();
 
@@ -69,7 +71,7 @@ fn test_apply_quality_filters_all_good_observations() {
         create_observation_with_good_station("obs3", 125),
     ];
 
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
     // All observations should pass
     assert_eq!(result.len(), 3);
@@ -77,7 +79,7 @@ fn test_apply_quality_filters_all_good_observations() {
 }
 
 #[test]
-fn test_apply_quality_filters_all_bad_observations() {
+fn test_apply_processing_filters_all_bad_observations() {
     let mut stats = ProcessingStats::new();
     let config = create_test_quality_config();
 
@@ -87,11 +89,11 @@ fn test_apply_quality_filters_all_bad_observations() {
         create_observation_with_missing_station("obs3", 997),
     ];
 
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
-    // Permissive quality filter keeps observations with some valid measurements
-    // Even "bad" observations may have scientific value
-    assert_eq!(result.len(), 3);
+    // Strict config filters out all observations with processing issues
+    // Missing stations and parse failures are excluded
+    assert_eq!(result.len(), 0);
     assert_eq!(stats.errors, 0);
 }
 
@@ -108,8 +110,11 @@ fn test_has_analysis_quality_missing_station() {
     let observation = create_observation_with_missing_station("obs1", 999);
     let _config = create_test_quality_config();
 
-    // Strict config should reject observations with missing stations
-    assert!(!has_analysis_quality(&observation));
+    // NOTE: With strict error handling, observations with missing stations
+    // are now caught during parsing and never reach the quality filter stage.
+    // Any observation that reaches here has valid station metadata.
+    // The ProcessingFlag::StationMissing is only used for enrichment testing.
+    assert!(has_analysis_quality(&observation));
 }
 
 #[test]
@@ -147,7 +152,7 @@ fn test_has_analysis_quality_parse_failures_permissive() {
 }
 
 #[test]
-fn test_get_quality_filter_stats() {
+fn test_get_processing_filter_stats() {
     let before_observations = vec![
         create_observation_with_good_station("obs1", 123),
         create_observation_with_missing_station("obs2", 999),
@@ -161,8 +166,8 @@ fn test_get_quality_filter_stats() {
     ];
 
     let config = create_test_quality_config();
-    let (total, _would_pass, _version_failures, _no_measurements, _critical_errors) =
-        get_quality_filter_stats(&before_observations, &config);
+    let (total, _would_pass, _no_measurements, _critical_errors) =
+        get_processing_filter_stats(&before_observations, &config);
 
     let input_count = total;
     let output_count = after_observations.len();
@@ -176,7 +181,7 @@ fn test_get_quality_filter_stats() {
 }
 
 #[test]
-fn test_get_quality_filter_stats_no_filtering() {
+fn test_get_processing_filter_stats_no_filtering() {
     let observations = vec![
         create_observation_with_good_station("obs1", 123),
         create_observation_with_good_station("obs2", 124),
@@ -184,8 +189,8 @@ fn test_get_quality_filter_stats_no_filtering() {
     ];
 
     let config = create_test_quality_config();
-    let (total, _would_pass, _version_failures, _no_measurements, _critical_errors) =
-        get_quality_filter_stats(&observations, &config);
+    let (total, _would_pass, _no_measurements, _critical_errors) =
+        get_processing_filter_stats(&observations, &config);
 
     let input_count = total;
     let output_count = observations.len();
@@ -199,7 +204,7 @@ fn test_get_quality_filter_stats_no_filtering() {
 }
 
 #[test]
-fn test_get_quality_filter_stats_complete_filtering() {
+fn test_get_processing_filter_stats_complete_filtering() {
     let before_observations = vec![
         create_observation_with_missing_station("obs1", 999),
         create_observation_with_parse_failures("obs2", 998),
@@ -208,8 +213,8 @@ fn test_get_quality_filter_stats_complete_filtering() {
     let after_observations: Vec<Observation> = vec![];
 
     let config = create_test_quality_config();
-    let (total, _would_pass, _version_failures, _no_measurements, _critical_errors) =
-        get_quality_filter_stats(&before_observations, &config);
+    let (total, _would_pass, _no_measurements, _critical_errors) =
+        get_processing_filter_stats(&before_observations, &config);
 
     let input_count = total;
     let output_count = after_observations.len();
@@ -223,7 +228,7 @@ fn test_get_quality_filter_stats_complete_filtering() {
 }
 
 #[test]
-fn test_get_quality_summary() {
+fn test_get_processing_quality_summary() {
     let before_observations = vec![
         create_observation_with_good_station("obs1", 123),
         create_observation_with_missing_station("obs2", 999),
@@ -232,12 +237,12 @@ fn test_get_quality_summary() {
 
     let _after_observations = vec![create_observation_with_good_station("obs1", 123)];
 
-    let summary = get_quality_summary(&before_observations);
+    let summary = get_processing_quality_summary(&before_observations);
 
     // Check that summary contains key information
-    assert!(summary.contains("Quality Summary"));
+    assert!(summary.contains("Processing Quality Summary"));
     assert!(summary.contains("3 observations"));
-    assert!(summary.contains("33.3%"));
+    assert!(summary.contains("MIDAS data quality indicators preserved"));
 }
 
 #[test]
@@ -250,7 +255,7 @@ fn test_quality_filtering_preserves_good_observations() {
     good_obs.set_processing_flag("custom_check".to_string(), ProcessingFlag::ParseOk);
 
     let observations = vec![good_obs.clone()];
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
     assert_eq!(result.len(), 1);
 
@@ -275,7 +280,7 @@ fn test_quality_filtering_with_mixed_processing_flags() {
     mixed_obs.set_processing_flag("measurement3".to_string(), ProcessingFlag::MissingValue);
 
     let observations = vec![mixed_obs];
-    let result = apply_quality_filters(observations, &config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
     // The behavior depends on the implementation - test what actually happens
     // This documents the current behavior for mixed processing flags
@@ -283,21 +288,19 @@ fn test_quality_filtering_with_mixed_processing_flags() {
 }
 
 #[test]
-fn test_quality_filtering_respects_configuration() {
+fn test_processing_filtering_respects_configuration() {
     let mut stats = ProcessingStats::new();
 
     // Test with strict configuration
     let strict_config = QualityControlConfig {
-        include_suspect: false,
-        include_unchecked: false,
-        min_quality_version: 2,
+        require_station_metadata: true,
+        exclude_empty_measurements: true,
     };
 
     // Test with permissive configuration
     let permissive_config = QualityControlConfig {
-        include_suspect: true,
-        include_unchecked: true,
-        min_quality_version: 0,
+        require_station_metadata: false,
+        exclude_empty_measurements: false,
     };
 
     let observations = vec![
@@ -305,43 +308,38 @@ fn test_quality_filtering_respects_configuration() {
         create_observation_with_parse_failures("obs2", 998),
     ];
 
-    let strict_result = apply_quality_filters(observations.clone(), &strict_config, &mut stats);
-    let permissive_result = apply_quality_filters(observations, &permissive_config, &mut stats);
+    let strict_result = apply_processing_filters(observations.clone(), &strict_config, &mut stats);
+    let permissive_result = apply_processing_filters(observations, &permissive_config, &mut stats);
 
     // Permissive config should pass more observations than strict config
     assert!(permissive_result.len() >= strict_result.len());
 }
 
 #[test]
-fn test_quality_filtering_version_requirements() {
+fn test_processing_filtering_preserves_midas_quality_indicators() {
     let mut stats = ProcessingStats::new();
 
-    // Create observations with different version numbers
+    // Create observations with different MIDAS quality indicators
     let mut old_version_obs = create_observation_with_good_station("obs1", 123);
-    old_version_obs.version_num = 1;
+    old_version_obs.version_num = 0; // Original data
 
     let mut new_version_obs = create_observation_with_good_station("obs2", 124);
-    new_version_obs.version_num = 3;
+    new_version_obs.version_num = 1; // Best version
 
     let observations = vec![old_version_obs, new_version_obs];
 
-    // Test with min version requirement of 2
-    let version_config = QualityControlConfig {
-        include_suspect: true,
-        include_unchecked: true,
-        min_quality_version: 2,
-    };
+    let config = create_test_quality_config();
 
-    let result = apply_quality_filters(observations, &version_config, &mut stats);
+    let result = apply_processing_filters(observations, &config, &mut stats);
 
-    // Only the observation with version >= 2 should pass
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].observation_id, "obs2");
-    assert_eq!(result[0].version_num, 3);
+    // ALL MIDAS quality indicators should be preserved - no filtering on version_num
+    assert_eq!(result.len(), 2);
+    assert!(result.iter().any(|obs| obs.version_num == 0));
+    assert!(result.iter().any(|obs| obs.version_num == 1));
 }
 
 #[test]
-fn test_quality_filtering_edge_cases() {
+fn test_processing_filtering_edge_cases() {
     let mut stats = ProcessingStats::new();
     let config = create_test_quality_config();
 
@@ -355,19 +353,19 @@ fn test_quality_filtering_edge_cases() {
         HashMap::new(),
     );
 
-    let result = apply_quality_filters(vec![no_flags_obs], &config, &mut stats);
+    let result = apply_processing_filters(vec![no_flags_obs], &config, &mut stats);
 
-    // Behavior depends on implementation - document what happens
-    assert!(result.len() <= 1);
+    // Should pass - no processing errors
+    assert_eq!(result.len(), 1);
 
     // Test with observation that has empty measurements
     let mut empty_measurements_obs = create_observation_with_good_station("obs2", 124);
     empty_measurements_obs.measurements.clear();
 
-    let result2 = apply_quality_filters(vec![empty_measurements_obs], &config, &mut stats);
+    let result2 = apply_processing_filters(vec![empty_measurements_obs], &config, &mut stats);
 
-    // Should handle empty measurements gracefully
-    assert!(result2.len() <= 1);
+    // Should be filtered out due to empty measurements (processing failure indicator)
+    assert_eq!(result2.len(), 0);
 }
 
 #[test]
@@ -384,10 +382,11 @@ fn test_quality_summary_formatting() {
         create_observation_with_good_station("obs2", 124),
     ];
 
-    let summary = get_quality_summary(&before);
+    let summary = get_processing_quality_summary(&before);
 
     // Check summary format
     assert!(summary.contains("4 observations"));
     assert!(summary.contains("100.0%"));
-    assert!(summary.contains("Quality Summary"));
+    assert!(summary.contains("Processing Quality Summary"));
+    assert!(summary.contains("MIDAS data quality indicators preserved"));
 }

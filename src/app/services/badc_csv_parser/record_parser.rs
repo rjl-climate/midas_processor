@@ -3,7 +3,6 @@
 //! This module handles the parsing of individual observation records,
 //! including measurement extraction and quality flag processing.
 
-use chrono::Utc;
 use csv::StringRecord;
 use std::collections::HashMap;
 use tracing::debug;
@@ -15,7 +14,7 @@ use super::field_parsers::{
 };
 use super::header::SimpleHeader;
 use crate::Result;
-use crate::app::models::{Observation, ProcessingFlag, Station};
+use crate::app::models::{Observation, ProcessingFlag};
 use crate::app::services::station_registry::StationRegistry;
 
 /// Parse a single observation record from CSV data
@@ -35,25 +34,19 @@ pub async fn parse_observation_record(
     let rec_st_ind = parse_required_i32(record, mapping, "rec_st_ind")?;
     let version_num = parse_required_i32(record, mapping, "version_num")?;
 
-    // Get station metadata from registry (graceful handling)
-    let (station, station_processing_flag) = match station_registry.get_station(station_id) {
-        Some(station) => (station.clone(), ProcessingFlag::StationFound),
-        None => {
-            debug!(
-                "Station {} not found in registry, creating placeholder",
+    // Get station metadata from registry (strict requirement)
+    let station = station_registry.get_station(station_id)
+        .ok_or_else(|| {
+            crate::Error::data_validation(format!(
+                "Station {} not found in registry. All observations must have valid station metadata.",
                 station_id
-            );
-            (
-                create_placeholder_station(station_id),
-                ProcessingFlag::StationMissing,
-            )
-        }
-    };
+            ))
+        })?
+        .clone();
 
-    // Parse optional processing fields
-    let meto_stmp_time =
-        parse_optional_datetime(record, mapping, "meto_stmp_time").unwrap_or_else(Utc::now);
-    let midas_stmp_etime = parse_optional_i32(record, mapping, "midas_stmp_etime").unwrap_or(0);
+    // Parse optional processing fields (administrative metadata - may be missing in historical data)
+    let meto_stmp_time = parse_optional_datetime(record, mapping, "meto_stmp_time");
+    let midas_stmp_etime = parse_optional_i32(record, mapping, "midas_stmp_etime");
 
     // Parse measurements and build processing flags
     let (measurements, measurement_processing_flags) =
@@ -64,7 +57,7 @@ pub async fn parse_observation_record(
 
     // Build complete processing flags map
     let mut processing_flags = measurement_processing_flags;
-    processing_flags.insert("station".to_string(), station_processing_flag);
+    processing_flags.insert("station".to_string(), ProcessingFlag::StationFound);
     processing_flags.insert("record".to_string(), ProcessingFlag::Original); // Will be updated by record processor
 
     // Create and validate observation
@@ -84,24 +77,6 @@ pub async fn parse_observation_record(
         meto_stmp_time,
         midas_stmp_etime,
     )
-}
-
-/// Create a placeholder station for missing station metadata
-fn create_placeholder_station(station_id: i32) -> Station {
-    Station {
-        src_id: station_id,
-        src_name: format!("UNKNOWN_STATION_{}", station_id),
-        high_prcn_lat: 0.0,
-        high_prcn_lon: 0.0,
-        east_grid_ref: None,
-        north_grid_ref: None,
-        grid_ref_type: None,
-        src_bgn_date: chrono::DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now),
-        src_end_date: chrono::DateTime::from_timestamp(4102444800, 0).unwrap_or_else(Utc::now), // Year 2100
-        authority: "UNKNOWN".to_string(),
-        historic_county: "UNKNOWN".to_string(),
-        height_meters: 0.0,
-    }
 }
 
 /// Parse measurements from dynamic columns with processing flags

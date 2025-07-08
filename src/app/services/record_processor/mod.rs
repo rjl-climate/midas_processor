@@ -58,6 +58,7 @@
 //! ```
 
 pub mod deduplication;
+pub mod detailed_stats;
 pub mod enrichment;
 pub mod processor;
 pub mod quality_filter;
@@ -67,10 +68,15 @@ pub mod stats;
 pub mod tests;
 
 // Re-export main types for easy access
+pub use detailed_stats::{
+    DetailedProcessingStats, FileProcessingStats, ProcessingIssue, ProcessingIssueBuilder,
+};
 pub use processor::RecordProcessor;
 pub use stats::{ProcessingResult, ProcessingStats};
 
 // Re-export utility functions that might be useful externally
 pub use deduplication::{analyze_duplicate_patterns, are_duplicates, get_deduplication_metrics};
 pub use enrichment::{analyze_enrichment_needs, needs_station_enrichment};
-pub use quality_filter::{get_quality_filter_stats, get_quality_summary, has_analysis_quality};
+pub use quality_filter::{
+    get_processing_filter_stats, get_processing_quality_summary, has_analysis_quality,
+};

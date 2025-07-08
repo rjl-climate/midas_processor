@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use super::{
     deduplication::deduplicate_observations,
     enrichment::re_enrich_station_metadata,
-    quality_filter::apply_quality_filters,
+    quality_filter::apply_processing_filters,
     stats::{ProcessingResult, ProcessingStats},
 };
 
@@ -72,7 +72,7 @@ impl RecordProcessor {
     /// This method applies the complete processing pipeline:
     /// 1. Station metadata re-enrichment (fix placeholder/missing stations)
     /// 2. Deduplication based on record status priorities
-    /// 3. Quality control filtering based on configuration
+    /// 3. Processing quality filtering (MIDAS data quality preserved)
     ///
     /// # Arguments
     ///
@@ -102,9 +102,9 @@ impl RecordProcessor {
         let deduplicated_observations = deduplicate_observations(enriched_observations, &mut stats);
         stats.deduplicated = deduplicated_observations.len();
 
-        // Step 3: Apply quality control filtering
+        // Step 3: Apply processing quality filtering (MIDAS data quality preserved)
         let filtered_observations =
-            apply_quality_filters(deduplicated_observations, &self.quality_config, &mut stats);
+            apply_processing_filters(deduplicated_observations, &self.quality_config, &mut stats);
         stats.quality_filtered = filtered_observations.len();
         stats.final_output = filtered_observations.len();
 
@@ -192,7 +192,7 @@ impl RecordProcessor {
         // Step 3: Quality filtering (optional)
         if !skip_quality_filter {
             current_observations =
-                apply_quality_filters(current_observations, &self.quality_config, &mut stats);
+                apply_processing_filters(current_observations, &self.quality_config, &mut stats);
         }
         stats.quality_filtered = current_observations.len();
         stats.final_output = current_observations.len();

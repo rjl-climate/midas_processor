@@ -13,16 +13,12 @@ async fn test_record_processor_new() {
 
     // Test that configuration is stored correctly
     assert_eq!(
-        processor.quality_config().include_suspect,
-        config.include_suspect
+        processor.quality_config().require_station_metadata,
+        config.require_station_metadata
     );
     assert_eq!(
-        processor.quality_config().include_unchecked,
-        config.include_unchecked
-    );
-    assert_eq!(
-        processor.quality_config().min_quality_version,
-        config.min_quality_version
+        processor.quality_config().exclude_empty_measurements,
+        config.exclude_empty_measurements
     );
 }
 

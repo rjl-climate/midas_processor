@@ -19,6 +19,8 @@ pub mod app {
     pub mod models;
     pub mod services {
         pub mod badc_csv_parser;
+        pub mod cache_scanner;
+        pub mod integration_test;
         pub mod parquet_writer;
         pub mod record_processor;
         pub mod station_registry;

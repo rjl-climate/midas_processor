@@ -67,6 +67,10 @@ pub mod quality_flags {
 
 /// Record status indicator values for MIDAS observation records
 ///
+/// IMPORTANT: These values are MIDAS quality control flags and are passed through
+/// without interpretation per explicit directive to avoid code complexity.
+/// This list is for reference/documentation only - DO NOT use for validation.
+///
 /// These values represent the current stage in the life of a record within the MIDAS system.
 /// Based on empirical analysis of real MIDAS data, the most common values are:
 /// - 1001: Most common status (518,203 records) - likely processed/quality-assured data
@@ -102,15 +106,19 @@ pub mod record_status {
     pub const PROCESSING_STAGE_1012: i32 = 1012;
 
     /// All valid record status indicator values found in real MIDAS data
+    ///
+    /// WARNING: DO NOT USE FOR VALIDATION - FOR REFERENCE ONLY
+    /// All MIDAS QC flags are passed through without interpretation per directive
     pub const ALL_VALID_VALUES: &[i32] = &[
         1, 9, // Legacy values
         1001, 1011, 1022, 2001, 1025, 2022, 1010, 1026, 2011, 1012, // Common values
-        1004, 15, 7, 82, 57, 26, 24, 21, 2025, 2004, 2026, // Less common but valid values
+        1004, 15, 7, 82, 57, 26, 24, 21, 2025, 2004,
+        2026, // Less common but valid values
+              // Note: Real MIDAS data may contain other values (e.g., 1023) - all should be preserved
     ];
 }
 
-/// Quality control version preferences
-pub const MIN_QUALITY_VERSION: i32 = 1;
+/// Quality control version preferences (for data discovery only - not filtering)
 pub const PREFERRED_QC_VERSION: &str = QC_VERSION_LATEST;
 
 // =============================================================================
@@ -145,9 +153,9 @@ pub const DEFAULT_MEMORY_LIMIT_GB: usize = 16;
 /// Memory limit in bytes (converted from GB)
 pub const DEFAULT_MEMORY_LIMIT_BYTES: usize = DEFAULT_MEMORY_LIMIT_GB * 1024 * 1024 * 1024;
 
-/// Default quality control settings
-pub const DEFAULT_INCLUDE_SUSPECT: bool = false;
-pub const DEFAULT_INCLUDE_UNCHECKED: bool = false;
+/// Default processing quality control settings (MIDAS data quality preserved)
+pub const DEFAULT_REQUIRE_STATION_METADATA: bool = true;
+pub const DEFAULT_EXCLUDE_EMPTY_MEASUREMENTS: bool = true;
 
 // =============================================================================
 // File and Directory Constants

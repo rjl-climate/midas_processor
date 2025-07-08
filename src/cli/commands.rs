@@ -4,7 +4,7 @@
 //! and error handling for the CLI interface.
 
 use crate::app::services::station_registry::StationRegistry;
-use crate::cli::args::{Args, Commands, OutputFormat, ProcessArgs, StationsArgs};
+use crate::cli::args::{Args, Commands, OutputFormat, ProcessArgs, StationsArgs, ValidateArgs};
 use crate::config::Config;
 use crate::{Error, Result};
 use chrono::TimeZone;
@@ -64,6 +64,7 @@ pub async fn run(args: Args) -> Result<ProcessingStats> {
     match args.get_command() {
         Commands::Process(process_args) => run_process(process_args).await,
         Commands::Stations(stations_args) => run_stations(stations_args).await,
+        Commands::Validate(validate_args) => run_validate(validate_args).await,
     }
 }
 
@@ -223,31 +224,64 @@ pub async fn run_stations(args: StationsArgs) -> Result<ProcessingStats> {
         datasets
     );
 
-    // Load station registry with progress bar
-    let (registry, load_stats) = StationRegistry::load_from_cache(
-        &cache_path,
-        &datasets,
-        true, // Show progress
-    )
-    .await?;
+    // Load station registries for each dataset separately and combine
+    let mut combined_registry = StationRegistry::new(cache_path.clone());
+    let mut combined_load_stats = crate::app::services::station_registry::LoadStats::new();
+
+    for dataset in &datasets {
+        info!("Loading stations for dataset: {}", dataset);
+
+        let (dataset_registry, dataset_stats) = StationRegistry::load_for_dataset(
+            &cache_path,
+            dataset,
+            true, // Show progress
+        )
+        .await?;
+
+        // Merge stations from this dataset into combined registry
+        for (&station_id, station) in dataset_registry.iter_stations() {
+            if combined_registry.contains_station(station_id) {
+                warn!(
+                    "Station {} found in multiple datasets - keeping first occurrence",
+                    station_id
+                );
+            } else {
+                combined_registry.add_station(station.clone());
+            }
+        }
+
+        // Accumulate statistics
+        combined_load_stats.files_processed += dataset_stats.files_processed;
+        combined_load_stats.stations_loaded += dataset_stats.stations_loaded;
+        combined_load_stats.total_records_found += dataset_stats.total_records_found;
+        combined_load_stats.datasets_processed += 1;
+        combined_load_stats.errors.extend(dataset_stats.errors);
+    }
+
+    // Update combined registry metadata
+    combined_registry.loaded_datasets = datasets.clone();
+    combined_registry.files_processed = combined_load_stats.files_processed;
+    combined_registry.total_records_found = combined_load_stats.total_records_found;
+    combined_load_stats.load_duration = start_time.elapsed();
 
     info!(
-        "Station registry loaded: {} stations from {} files in {:.2}s",
-        load_stats.stations_loaded,
-        load_stats.files_processed,
-        load_stats.load_duration.as_secs_f64()
+        "Station registry loaded: {} stations from {} files across {} datasets in {:.2}s",
+        combined_load_stats.stations_loaded,
+        combined_load_stats.files_processed,
+        datasets.len(),
+        combined_load_stats.load_duration.as_secs_f64()
     );
 
     // Generate report
-    generate_station_report(&args, &registry, &load_stats)?;
+    generate_station_report(&args, &combined_registry, &combined_load_stats)?;
 
     // Convert to processing stats for consistency
     let stats = ProcessingStats {
         datasets_processed: datasets.len(),
-        files_processed: load_stats.files_processed,
-        stations_loaded: load_stats.stations_loaded,
+        files_processed: combined_load_stats.files_processed,
+        stations_loaded: combined_load_stats.stations_loaded,
         observations_processed: 0, // Not applicable for stations command
-        errors_encountered: load_stats.errors.len(),
+        errors_encountered: combined_load_stats.errors.len(),
         processing_time: start_time.elapsed(),
         output_sizes: if let Some(output_file) = &args.output_file {
             // Try to get file size if we wrote to a file
@@ -267,6 +301,321 @@ pub async fn run_stations(args: StationsArgs) -> Result<ProcessingStats> {
     );
 
     Ok(stats)
+}
+
+/// Validate command runner for MIDAS processor
+///
+/// This function runs comprehensive validation tests on the processing pipeline
+/// using real MIDAS data from the cache to identify issues and generate reports.
+pub async fn run_validate(args: ValidateArgs) -> Result<ProcessingStats> {
+    let start_time = Instant::now();
+
+    // Set up logging
+    setup_validate_logging(&args)?;
+
+    info!("Starting MIDAS processing pipeline validation");
+    debug!("Validation arguments: {:?}", args);
+
+    // Validate arguments
+    args.validate()?;
+
+    // Get cache and output paths
+    let cache_path = args.get_cache_path();
+    let output_dir = args.get_output_dir();
+
+    info!("Cache path: {}", cache_path.display());
+    info!("Output directory: {}", output_dir.display());
+
+    // Create integration test configuration
+    use crate::app::services::integration_test::{IntegrationTestConfig, IntegrationTestFramework};
+    use crate::config::QualityControlConfig;
+
+    let test_config = IntegrationTestConfig {
+        cache_path,
+        max_files: Some(args.max_files),
+        datasets: args.get_datasets().unwrap_or_default(),
+        output_dir,
+        continue_on_error: args.continue_on_error,
+        max_processing_time_per_file: args.max_processing_time,
+        max_memory_per_file: 1024, // 1GB default
+        min_file_size: args.min_file_size,
+        quality_control: QualityControlConfig {
+            require_station_metadata: !args.allow_missing_stations,
+            exclude_empty_measurements: !args.include_empty_measurements,
+        },
+    };
+
+    // Initialize test framework
+    info!("Initializing validation test framework");
+    let mut framework = IntegrationTestFramework::new(test_config).await?;
+
+    // Run validation tests with progress reporting
+    let progress_bar = if args.show_progress() {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap(),
+        );
+        pb.set_message("Running validation tests...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
+
+    info!("Running validation tests");
+    let test_result = framework.run_tests().await?;
+
+    if let Some(pb) = &progress_bar {
+        pb.finish_with_message("Validation tests completed");
+    }
+
+    // Save validation results
+    info!("Saving validation results");
+    framework.save_results(&test_result).await?;
+
+    // Generate final report
+    generate_validation_report(&args, &test_result)?;
+
+    // Convert to processing stats for consistency
+    let stats = ProcessingStats {
+        datasets_processed: test_result.detailed_stats.dataset_issues.len(),
+        files_processed: test_result.files_processed,
+        stations_loaded: 0, // Not tracked in validation
+        observations_processed: test_result.total_records,
+        errors_encountered: test_result.files_failed,
+        processing_time: start_time.elapsed(),
+        output_sizes: vec![
+            ("detailed_stats.json".to_string(), 0), // Size would need to be calculated
+            ("test_summary.md".to_string(), 0),
+            ("issues.csv".to_string(), 0),
+        ],
+    };
+
+    info!(
+        "Validation completed in {:.2}s: {} files processed, {:.1}% success rate",
+        stats.processing_time.as_secs_f64(),
+        test_result.files_processed,
+        test_result.success_rate()
+    );
+
+    Ok(stats)
+}
+
+/// Set up structured logging for validate command
+fn setup_validate_logging(args: &ValidateArgs) -> Result<()> {
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let log_level = args.get_log_level();
+
+    // Create filter
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("midas_processor={}", log_level)));
+
+    // Set up subscriber based on quiet mode
+    if args.quiet {
+        // Minimal logging for quiet mode
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                fmt::layer()
+                    .with_target(false)
+                    .with_level(true)
+                    .with_writer(std::io::stderr)
+                    .compact(),
+            )
+            .init();
+    } else {
+        // Standard logging with timestamps
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                fmt::layer()
+                    .with_target(false)
+                    .with_level(true)
+                    .with_timer(fmt::time::uptime())
+                    .with_writer(std::io::stderr),
+            )
+            .init();
+    }
+
+    debug!("Validation logging initialized at level: {}", log_level);
+    Ok(())
+}
+
+/// Generate validation report based on output format
+fn generate_validation_report(
+    args: &ValidateArgs,
+    result: &crate::app::services::integration_test::IntegrationTestResult,
+) -> Result<()> {
+    match args.output_format {
+        OutputFormat::Human => generate_human_validation_report(result),
+        OutputFormat::Json => generate_json_validation_report(result),
+        OutputFormat::Csv => generate_csv_validation_report(result),
+    }
+}
+
+/// Generate human-readable validation report
+fn generate_human_validation_report(
+    result: &crate::app::services::integration_test::IntegrationTestResult,
+) -> Result<()> {
+    let duration = HumanDuration(std::time::Duration::from_secs_f64(
+        result.total_processing_time_seconds,
+    ));
+
+    println!("\n🧪 MIDAS Processing Pipeline Validation Results");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Overall status
+    if result.success {
+        println!("✅ Overall Status: PASS");
+    } else {
+        println!("❌ Overall Status: FAIL");
+    }
+
+    println!("\n📊 Test Summary:");
+    println!(
+        "   • Files processed: {} ({} failed)",
+        result.files_processed, result.files_failed
+    );
+    println!(
+        "   • Records processed: {} ({:.1}% success rate)",
+        result.total_records,
+        result.success_rate()
+    );
+    println!("   • Processing time: {}", duration);
+
+    if let Some(memory) = result.peak_memory_mb {
+        println!("   • Peak memory usage: {:.1}MB", memory);
+    }
+
+    // Issue summary
+    if !result.detailed_stats.issue_counts.is_empty() {
+        println!("\n⚠️  Issues Identified:");
+        for (issue_type, count) in &result.detailed_stats.issue_counts {
+            println!("   • {:?}: {} occurrences", issue_type, count);
+        }
+    } else {
+        println!("\n✅ No issues identified during validation");
+    }
+
+    // Critical issues
+    let critical_files = result.detailed_stats.files_with_critical_issues();
+    if !critical_files.is_empty() {
+        println!("\n🚨 Files with Critical Issues: {}", critical_files.len());
+        for file in critical_files.iter().take(5) {
+            println!(
+                "   • {}: {} critical issues",
+                file.file_path.display(),
+                file.issues_by_severity(
+                    crate::app::services::record_processor::detailed_stats::IssueSeverity::Critical
+                )
+                .len()
+            );
+        }
+        if critical_files.len() > 5 {
+            println!(
+                "   • ... and {} more files with critical issues",
+                critical_files.len() - 5
+            );
+        }
+    }
+
+    // Low success rate files
+    let low_success_files = result.detailed_stats.files_with_low_success_rate(80.0);
+    if !low_success_files.is_empty() {
+        println!(
+            "\n📉 Files with Low Success Rate (<80%): {}",
+            low_success_files.len()
+        );
+        for file in low_success_files.iter().take(5) {
+            println!(
+                "   • {}: {:.1}% success rate",
+                file.file_path.display(),
+                file.success_rate()
+            );
+        }
+        if low_success_files.len() > 5 {
+            println!(
+                "   • ... and {} more files with low success rates",
+                low_success_files.len() - 5
+            );
+        }
+    }
+
+    // Top problematic files
+    let problematic_files = result.detailed_stats.most_problematic_files(5);
+    if !problematic_files.is_empty() {
+        println!("\n🔍 Most Problematic Files:");
+        for file in problematic_files {
+            println!(
+                "   • {}: {} total issues",
+                file.file_path.display(),
+                file.issues.len()
+            );
+        }
+    }
+
+    // Recommendations
+    println!("\n💡 Recommendations:");
+    if result.success {
+        println!("   • Processing pipeline is working correctly");
+        println!("   • Ready to proceed with production processing");
+    } else {
+        println!("   • Review critical issues before production use");
+        println!("   • Consider adjusting quality control parameters");
+        println!("   • Investigate files with low success rates");
+    }
+
+    println!("\n📁 Detailed results saved to validation output directory");
+    println!();
+
+    Ok(())
+}
+
+/// Generate JSON validation report
+fn generate_json_validation_report(
+    result: &crate::app::services::integration_test::IntegrationTestResult,
+) -> Result<()> {
+    let json_result = serde_json::to_string_pretty(result).map_err(|e| {
+        Error::configuration(format!("Failed to serialize validation result: {}", e))
+    })?;
+
+    println!("{}", json_result);
+    Ok(())
+}
+
+/// Generate CSV validation report
+fn generate_csv_validation_report(
+    result: &crate::app::services::integration_test::IntegrationTestResult,
+) -> Result<()> {
+    println!("metric,value");
+    println!("overall_success,{}", result.success);
+    println!("files_processed,{}", result.files_processed);
+    println!("files_failed,{}", result.files_failed);
+    println!(
+        "file_success_rate_percent,{:.2}",
+        result.file_success_rate()
+    );
+    println!("total_records,{}", result.total_records);
+    println!("successful_records,{}", result.successful_records);
+    println!("record_success_rate_percent,{:.2}", result.success_rate());
+    println!(
+        "processing_time_seconds,{:.2}",
+        result.total_processing_time_seconds
+    );
+
+    if let Some(memory) = result.peak_memory_mb {
+        println!("peak_memory_mb,{:.2}", memory);
+    }
+
+    // Issue counts
+    for (issue_type, count) in &result.detailed_stats.issue_counts {
+        println!("issue_count_{:?},{}", issue_type, count);
+    }
+
+    Ok(())
 }
 
 /// Set up structured logging for stations command
@@ -398,10 +747,9 @@ fn apply_cli_overrides(config: &mut Config, args: &ProcessArgs) -> Result<()> {
     config.processing.dry_run = args.dry_run;
     config.processing.force_overwrite = args.force_overwrite;
 
-    // Override quality control settings
-    config.quality_control.include_suspect = args.include_suspect;
-    config.quality_control.include_unchecked = args.include_unchecked;
-    config.quality_control.min_quality_version = args.qc_version;
+    // Override processing quality control settings (MIDAS data quality preserved)
+    config.quality_control.require_station_metadata = !args.allow_missing_stations;
+    config.quality_control.exclude_empty_measurements = !args.include_empty_measurements;
 
     // Override performance settings
     config.performance.parallel_workers = args.workers;
@@ -1126,9 +1474,8 @@ mod tests {
             output_path: Some(temp_path.join("output")),
             cache_path: None,
             datasets: None,
-            include_suspect: true,
-            include_unchecked: true,
-            qc_version: 2,
+            allow_missing_stations: true,
+            include_empty_measurements: true,
             dry_run: true,
             force_overwrite: true,
             config_file: None,
@@ -1143,9 +1490,8 @@ mod tests {
 
         assert!(config.processing.dry_run);
         assert!(config.processing.force_overwrite);
-        assert!(config.quality_control.include_suspect);
-        assert!(config.quality_control.include_unchecked);
-        assert_eq!(config.quality_control.min_quality_version, 2);
+        assert!(!config.quality_control.require_station_metadata); // allow_missing_stations = true means require = false
+        assert!(!config.quality_control.exclude_empty_measurements); // include_empty_measurements = true means exclude = false
         assert_eq!(config.performance.parallel_workers, 16);
         assert_eq!(config.performance.memory_limit_gb, 32);
         assert_eq!(config.logging.level, "debug");

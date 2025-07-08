@@ -36,24 +36,6 @@ pub fn create_test_station(src_id: i32, name: &str) -> Station {
     }
 }
 
-/// Create a placeholder station (as created by CSV parser when station not found)
-pub fn create_placeholder_station(src_id: i32) -> Station {
-    Station {
-        src_id,
-        src_name: format!("UNKNOWN_STATION_{}", src_id),
-        high_prcn_lat: 0.0,
-        high_prcn_lon: 0.0,
-        east_grid_ref: None,
-        north_grid_ref: None,
-        grid_ref_type: None,
-        src_bgn_date: chrono::DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now),
-        src_end_date: chrono::DateTime::from_timestamp(4102444800, 0).unwrap_or_else(Utc::now),
-        authority: "UNKNOWN".to_string(),
-        historic_county: "UNKNOWN".to_string(),
-        height_meters: 0.0,
-    }
-}
-
 /// Create a test observation with specified parameters
 pub fn create_test_observation(
     observation_id: &str,
@@ -83,8 +65,8 @@ pub fn create_test_observation(
         measurements,
         quality_flags,
         processing_flags,
-        meto_stmp_time: Utc.with_ymd_and_hms(2023, 6, 15, 13, 0, 0).unwrap(),
-        midas_stmp_etime: 3600,
+        meto_stmp_time: Some(Utc.with_ymd_and_hms(2023, 6, 15, 13, 0, 0).unwrap()),
+        midas_stmp_etime: Some(3600),
     }
 }
 
@@ -106,11 +88,15 @@ pub fn create_observation_with_good_station(observation_id: &str, station_id: i3
 }
 
 /// Create a test observation with missing station metadata
+/// Create a test observation that simulates what would have been created with missing station
+/// NOTE: This is now only for testing enrichment behavior. In production, missing stations
+/// cause parsing to fail entirely.
 pub fn create_observation_with_missing_station(
     observation_id: &str,
     station_id: i32,
 ) -> Observation {
-    let station = create_placeholder_station(station_id);
+    // Use a valid test station but mark it as missing for enrichment testing
+    let station = create_test_station(station_id, "TEST STATION (simulated missing)");
     let mut processing_flags = HashMap::new();
     processing_flags.insert("air_temperature".to_string(), ProcessingFlag::ParseOk);
     processing_flags.insert("humidity".to_string(), ProcessingFlag::ParseOk);
@@ -183,20 +169,18 @@ pub fn create_mock_station_registry() -> Arc<StationRegistry> {
     Arc::new(registry)
 }
 
-/// Create a test quality control configuration
+/// Create a test quality control configuration (strict processing requirements)
 pub fn create_test_quality_config() -> QualityControlConfig {
     QualityControlConfig {
-        include_suspect: false,
-        include_unchecked: false,
-        min_quality_version: 1,
+        require_station_metadata: true,
+        exclude_empty_measurements: true,
     }
 }
 
-/// Create a permissive quality control configuration
+/// Create a permissive quality control configuration (lenient processing requirements)
 pub fn create_permissive_quality_config() -> QualityControlConfig {
     QualityControlConfig {
-        include_suspect: true,
-        include_unchecked: true,
-        min_quality_version: 0,
+        require_station_metadata: false,
+        exclude_empty_measurements: false,
     }
 }

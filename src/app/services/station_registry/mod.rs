@@ -84,4 +84,24 @@ impl StationRegistry {
             total_records_found: self.total_records_found,
         }
     }
+
+    /// Get an iterator over all (station_id, station) pairs in the registry
+    pub fn iter_stations(&self) -> impl Iterator<Item = (&i32, &Station)> {
+        self.stations.iter()
+    }
+
+    /// Add a station to the registry
+    pub fn add_station(&mut self, station: Station) {
+        self.stations.insert(station.src_id, station);
+    }
+
+    /// Merge another registry into this one
+    pub fn merge(&mut self, other: StationRegistry) {
+        for (station_id, station) in other.stations {
+            self.stations.insert(station_id, station);
+        }
+        self.loaded_datasets.extend(other.loaded_datasets);
+        self.files_processed += other.files_processed;
+        self.total_records_found += other.total_records_found;
+    }
 }

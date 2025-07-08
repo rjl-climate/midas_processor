@@ -29,8 +29,8 @@ async fn test_parse_real_midas_observation_file() {
     }
 
     // Load real station registry from uk-daily-temperature-obs
-    let datasets = vec!["uk-daily-temperature-obs".to_string()];
-    let (registry, load_stats) = StationRegistry::load_from_cache(cache_path, &datasets, false)
+    let dataset = "uk-daily-temperature-obs";
+    let (registry, load_stats) = StationRegistry::load_for_dataset(cache_path, dataset, false)
         .await
         .expect("Failed to load station registry from real MIDAS cache");
 
@@ -151,8 +151,8 @@ async fn test_parse_multiple_real_observation_files() {
     }
 
     // Load station registry
-    let datasets = vec!["uk-daily-temperature-obs".to_string()];
-    let (registry, _) = StationRegistry::load_from_cache(cache_path, &datasets, false)
+    let dataset = "uk-daily-temperature-obs";
+    let (registry, _) = StationRegistry::load_for_dataset(cache_path, dataset, false)
         .await
         .expect("Failed to load station registry");
 
@@ -232,8 +232,8 @@ async fn test_real_data_quality_scenarios() {
     }
 
     // Load station registry
-    let datasets = vec!["uk-daily-temperature-obs".to_string()];
-    let (registry, _) = StationRegistry::load_from_cache(cache_path, &datasets, false)
+    let dataset = "uk-daily-temperature-obs";
+    let (registry, _) = StationRegistry::load_for_dataset(cache_path, dataset, false)
         .await
         .expect("Failed to load station registry");
 
@@ -307,8 +307,8 @@ async fn test_real_station_registry_integration() {
     }
 
     // Load station registry from real capability files
-    let datasets = vec!["uk-daily-temperature-obs".to_string()];
-    let (registry, load_stats) = StationRegistry::load_from_cache(cache_path, &datasets, false)
+    let dataset = "uk-daily-temperature-obs";
+    let (registry, load_stats) = StationRegistry::load_for_dataset(cache_path, dataset, false)
         .await
         .expect("Failed to load station registry");
 

@@ -305,7 +305,7 @@ async fn test_re_enrich_station_metadata_preserves_other_flags() {
     processing_flags.insert("humidity".to_string(), ProcessingFlag::ParseFailed);
     processing_flags.insert("station".to_string(), ProcessingFlag::StationMissing);
 
-    let station = create_placeholder_station(999);
+    let station = create_test_station(999, "TEST STATION (simulated placeholder)");
     let observations = vec![create_test_observation(
         "obs1",
         999,

@@ -240,6 +240,106 @@ pub fn parse_station_record(
     Ok(Some(station))
 }
 
+/// Parse a station record from centralized station metadata files
+///
+/// This function parses station metadata from the centralized metadata files that use
+/// a different field naming convention than capability files. These files contain
+/// fields like station_name, station_latitude, first_year, last_year instead of
+/// the capability file format.
+pub fn parse_station_metadata_record(
+    record: &StringRecord,
+    headers: &StringRecord,
+) -> Result<Option<Station>> {
+    // Create a map of column name to value for easier parsing
+    let mut fields = HashMap::new();
+    for (i, value) in record.iter().enumerate() {
+        if let Some(header) = headers.get(i) {
+            fields.insert(header.trim().to_lowercase(), value.trim());
+        }
+    }
+
+    // Helper function to parse optional values, treating "NA" as None
+    let parse_optional = |key: &str| -> Option<String> {
+        fields
+            .get(key)
+            .filter(|&val| !val.is_empty() && *val != "NA")
+            .map(|s| s.to_string())
+    };
+
+    // Helper function to parse required values
+    let parse_required = |key: &str| -> Result<String> {
+        parse_optional(key)
+            .ok_or_else(|| Error::data_validation(format!("Missing required field: {}", key)))
+    };
+
+    // Parse station fields using station metadata file format
+    let src_id: i32 = parse_required("src_id")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid src_id".to_string()))?;
+
+    let src_name = parse_required("station_name")?;
+
+    let high_prcn_lat: f64 = parse_required("station_latitude")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid station_latitude".to_string()))?;
+
+    let high_prcn_lon: f64 = parse_required("station_longitude")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid station_longitude".to_string()))?;
+
+    // Grid references are not present in station metadata files
+    let east_grid_ref = None;
+    let north_grid_ref = None;
+    let grid_ref_type = None;
+
+    // Convert first_year/last_year to proper DateTime fields
+    let first_year: i32 = parse_required("first_year")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid first_year".to_string()))?;
+
+    let last_year: i32 = parse_required("last_year")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid last_year".to_string()))?;
+
+    // Create src_bgn_date and src_end_date from year values
+    let src_bgn_date = chrono::NaiveDate::from_ymd_opt(first_year, 1, 1)
+        .ok_or_else(|| Error::data_validation(format!("Invalid first_year: {}", first_year)))?
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc();
+
+    let src_end_date = chrono::NaiveDate::from_ymd_opt(last_year, 12, 31)
+        .ok_or_else(|| Error::data_validation(format!("Invalid last_year: {}", last_year)))?
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc();
+
+    let authority = parse_required("authority")?;
+    let historic_county = parse_required("historic_county")?;
+
+    let height_meters: f32 = parse_required("station_elevation")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid station_elevation".to_string()))?;
+
+    // Create and validate station using the model's constructor
+    let station = Station::new(
+        src_id,
+        src_name,
+        high_prcn_lat,
+        high_prcn_lon,
+        east_grid_ref,
+        north_grid_ref,
+        grid_ref_type,
+        src_bgn_date,
+        src_end_date,
+        authority,
+        historic_county,
+        height_meters,
+    )?;
+
+    Ok(Some(station))
+}
+
 /// Extract station metadata from BADC capability file header records
 ///
 /// Processes header records in the format: key,scope,value[,additional_values...]
