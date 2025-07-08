@@ -48,7 +48,7 @@
 //! let processor = RecordProcessor::new(registry, qc_config);
 //!
 //! // Process observations
-//! let result = processor.process_observations(observations).await?;
+//! let result = processor.process_observations(observations, false).await?;
 //!
 //! // Check results
 //! println!("Processing summary: {}", result.summary());

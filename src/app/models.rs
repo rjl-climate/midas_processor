@@ -289,6 +289,12 @@ impl Station {
             ));
         }
 
+        // Accept "NA" as a valid placeholder for unknown authority
+        // This handles cases where authority information is not available in the dataset
+        if self.authority.trim() == "NA" {
+            // NA is acceptable as a placeholder for unknown authority
+        }
+
         if self.historic_county.trim().is_empty() {
             return Err(Error::data_validation(
                 "Historic county cannot be empty".to_string(),

@@ -1,6 +1,7 @@
 use clap::Parser;
 use midas_processor::cli::{args::Args, commands};
 use std::process;
+use tokio_util::sync::CancellationToken;
 
 fn main() {
     // Parse command line arguments
@@ -19,16 +20,22 @@ fn main() {
     });
 
     let result = runtime.block_on(async {
+        // Create cancellation token for coordinating graceful shutdown
+        let cancellation_token = CancellationToken::new();
+
         // Set up graceful shutdown handling
         let shutdown_signal = async {
             tokio::signal::ctrl_c()
                 .await
                 .expect("Failed to install CTRL+C signal handler");
+
+            // Cancel all operations when Ctrl+C is received
+            cancellation_token.cancel();
         };
 
         // Run the main command with cancellation support
         tokio::select! {
-            result = commands::run(args) => {
+            result = commands::run(args, cancellation_token.clone()) => {
                 result
             }
             _ = shutdown_signal => {

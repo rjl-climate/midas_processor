@@ -30,7 +30,7 @@ pub async fn create_dataset_writer(
         output_path.display()
     );
 
-    ParquetWriter::new_with_dataset(&output_path, config, Some(dataset_name)).await
+    ParquetWriter::new(&output_path, config).await
 }
 
 /// Write observations for a complete dataset with progress reporting

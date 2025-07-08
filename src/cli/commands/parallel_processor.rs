@@ -5,9 +5,7 @@
 //! the pace of processing, providing natural backpressure and eliminating timeout issues.
 
 use crate::Result;
-use crate::app::services::parquet_writer::{
-    WritingStats, writer::create_optimized_writer_with_dataset,
-};
+use crate::app::services::parquet_writer::{WritingStats, writer::create_optimized_writer};
 use crate::app::services::station_registry::StationRegistry;
 use crate::cli::commands::observation_stream::ParallelObservationStream;
 use crate::cli::commands::shared::create_progress_bar;
@@ -16,6 +14,7 @@ use crate::constants::DEFAULT_STREAMING_BUFFER_SIZE;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Simplified parallel processor using pull-based streaming
@@ -47,6 +46,7 @@ impl ParallelProcessor {
         &self,
         csv_files: &[PathBuf],
         show_progress: bool,
+        cancellation_token: CancellationToken,
     ) -> Result<ParallelProcessingResult> {
         info!(
             "Starting pull-based parallel processing of {} files with {} workers",
@@ -75,19 +75,19 @@ impl ParallelProcessor {
             self.station_registry.clone(),
             self.config.quality_control.clone(),
             self.config.performance.parallel_workers,
+            cancellation_token.clone(),
         );
 
-        // Create Parquet writer with pre-defined schema
+        // Create Parquet writer with dynamic schema discovery
         let parquet_output_path = self.config.get_parquet_output_path();
         let output_file = crate::app::services::parquet_writer::utils::create_dataset_output_path(
             &self.dataset_name,
             &parquet_output_path,
         );
 
-        let mut writer = create_optimized_writer_with_dataset(
+        let mut writer = create_optimized_writer(
             &output_file,
             1_000_000, // Estimate for optimization
-            Some(&self.dataset_name),
         )
         .await?;
 
@@ -102,6 +102,14 @@ impl ParallelProcessor {
         let mut last_stats_update = std::time::Instant::now();
 
         while observation_stream.has_more() {
+            // Check for cancellation before processing each observation batch
+            if cancellation_token.is_cancelled() {
+                info!("Processing cancelled by user during observation streaming");
+                return Err(crate::Error::processing_interrupted(
+                    "Processing interrupted by user".to_string(),
+                ));
+            }
+
             match observation_stream.next_observation().await {
                 Some(Ok(observation)) => {
                     observation_buffer.push(observation);

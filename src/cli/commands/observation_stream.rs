@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 /// Parallel observation stream that processes multiple files concurrently
@@ -34,6 +35,8 @@ pub struct ParallelObservationStream {
     stats: Arc<tokio::sync::Mutex<StreamStats>>,
     /// Flag to track if workers have been spawned
     workers_spawned: bool,
+    /// Cancellation token for graceful shutdown
+    cancellation_token: CancellationToken,
 }
 
 /// Single-file observation stream for sequential processing (kept for compatibility)
@@ -82,6 +85,7 @@ impl ParallelObservationStream {
         station_registry: Arc<StationRegistry>,
         quality_config: QualityControlConfig,
         max_concurrent_files: usize,
+        cancellation_token: CancellationToken,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1000); // Buffer for natural backpressure
         let workers = JoinSet::new();
@@ -92,6 +96,7 @@ impl ParallelObservationStream {
             workers,
             stats,
             workers_spawned: false,
+            cancellation_token: cancellation_token.clone(),
         };
 
         // Spawn worker tasks
@@ -101,6 +106,7 @@ impl ParallelObservationStream {
             quality_config,
             max_concurrent_files,
             tx,
+            cancellation_token,
         );
 
         stream
@@ -114,6 +120,7 @@ impl ParallelObservationStream {
         quality_config: QualityControlConfig,
         max_workers: usize,
         sender: mpsc::Sender<Result<Observation>>,
+        cancellation_token: CancellationToken,
     ) {
         let semaphore = Arc::new(Semaphore::new(max_workers));
         let stats = self.stats.clone();
@@ -133,6 +140,7 @@ impl ParallelObservationStream {
             let sender = sender.clone();
             let semaphore = semaphore.clone();
             let stats = stats.clone();
+            let cancellation_token = cancellation_token.clone();
 
             self.workers.spawn(async move {
                 Self::worker_task(
@@ -143,6 +151,7 @@ impl ParallelObservationStream {
                     sender,
                     semaphore,
                     stats,
+                    cancellation_token,
                 )
                 .await
             });
@@ -152,6 +161,7 @@ impl ParallelObservationStream {
     }
 
     /// Worker task that processes files from the shared queue
+    #[allow(clippy::too_many_arguments)]
     async fn worker_task(
         worker_id: usize,
         work_queue: Arc<tokio::sync::Mutex<VecDeque<PathBuf>>>,
@@ -160,6 +170,7 @@ impl ParallelObservationStream {
         sender: mpsc::Sender<Result<Observation>>,
         semaphore: Arc<Semaphore>,
         stats: Arc<tokio::sync::Mutex<StreamStats>>,
+        cancellation_token: CancellationToken,
     ) -> Result<usize> {
         let parser = BadcCsvParser::new(station_registry.clone());
         let processor = RecordProcessor::new(station_registry, quality_config);
@@ -168,6 +179,12 @@ impl ParallelObservationStream {
         debug!("Worker {} started", worker_id);
 
         loop {
+            // Check for cancellation before processing each file
+            if cancellation_token.is_cancelled() {
+                debug!("Worker {} cancelled by user", worker_id);
+                break;
+            }
+
             // Get next file from queue
             let file_path = {
                 let mut queue = work_queue.lock().await;
@@ -294,10 +311,14 @@ impl ParallelObservationStream {
                 }
             }
 
-            // Wait for either an observation or worker completion
+            // Wait for either an observation, worker completion, or cancellation
             tokio::select! {
                 observation = self.observation_receiver.recv() => {
                     return observation;
+                }
+                _ = self.cancellation_token.cancelled() => {
+                    debug!("Observation stream cancelled by user");
+                    return Some(Err(Error::data_validation("Processing cancelled by user".to_string())));
                 }
                 worker_result = self.workers.join_next(), if !self.workers.is_empty() => {
                     match worker_result {
@@ -549,6 +570,7 @@ mod tests {
             station_registry,
             quality_config,
             DEFAULT_CONCURRENT_FILES,
+            CancellationToken::new(),
         );
 
         // Initial state should show no activity

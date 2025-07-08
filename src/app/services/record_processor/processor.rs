@@ -38,7 +38,7 @@ use super::{
 /// let qc_config = QualityControlConfig::default();
 /// let processor = RecordProcessor::new(registry, qc_config);
 ///
-/// let result = processor.process_observations(observations).await?;
+/// let result = processor.process_observations(observations, false).await?;
 /// println!("Processed {} observations", result.observations.len());
 /// # Ok(())
 /// # }

@@ -298,10 +298,11 @@ async fn test_multiple_stations_workflow() -> Result<()> {
     assert_eq!(stats.observations_written, 60); // Two stations × 30 days each
     assert!(stats.bytes_written > 0);
 
-    let file_path = temp_dir
-        .path()
-        .join("parquet_files")
-        .join("multi_station_data.parquet");
+    let expected_filename =
+        midas_processor::app::services::parquet_writer::utils::create_versioned_filename(
+            "multi_station_data",
+        );
+    let file_path = temp_dir.path().join(expected_filename);
     assert!(file_path.exists());
 
     Ok(())
@@ -327,10 +328,11 @@ async fn test_dataset_utility_functions() -> Result<()> {
 
     assert_eq!(stats.observations_written, 50);
 
-    let expected_path = temp_dir
-        .path()
-        .join("parquet_files")
-        .join("march_temperature_data.parquet");
+    let expected_filename =
+        midas_processor::app::services::parquet_writer::utils::create_versioned_filename(
+            "march_temperature_data",
+        );
+    let expected_path = temp_dir.path().join(expected_filename);
     assert!(expected_path.exists());
 
     // Test multiple datasets writing
@@ -570,10 +572,11 @@ async fn test_real_world_workflow_simulation() -> Result<()> {
     assert_eq!(stats.processing_errors, 0);
     assert_eq!(stats.success_rate(), 100.0);
 
-    let output_file = temp_dir
-        .path()
-        .join("parquet_files")
-        .join("uk_daily_observations_june_2023.parquet");
+    let expected_filename =
+        midas_processor::app::services::parquet_writer::utils::create_versioned_filename(
+            "uk_daily_observations_june_2023",
+        );
+    let output_file = temp_dir.path().join(expected_filename);
     assert!(output_file.exists());
 
     // Verify file size is reasonable for this amount of data

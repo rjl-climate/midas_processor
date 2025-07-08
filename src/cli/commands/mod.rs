@@ -16,6 +16,7 @@ pub use shared::ProcessingStats;
 
 use crate::Result;
 use crate::cli::args::{Args, Commands};
+use tokio_util::sync::CancellationToken;
 
 /// Main command runner for MIDAS processor
 ///
@@ -24,11 +25,17 @@ use crate::cli::args::{Args, Commands};
 /// - `process`: Data processing workflow with Parquet output
 /// - `stations`: Station registry analysis and reporting
 /// - `validate`: Pipeline validation with comprehensive testing
-pub async fn run(args: Args) -> Result<ProcessingStats> {
+pub async fn run(args: Args, cancellation_token: CancellationToken) -> Result<ProcessingStats> {
     match args.get_command() {
-        Commands::Process(process_args) => process::run_process(process_args).await,
-        Commands::Stations(stations_args) => stations::run_stations(stations_args).await,
-        Commands::Validate(validate_args) => validate::run_validate(validate_args).await,
+        Commands::Process(process_args) => {
+            process::run_process(process_args, cancellation_token).await
+        }
+        Commands::Stations(stations_args) => {
+            stations::run_stations(stations_args, cancellation_token).await
+        }
+        Commands::Validate(validate_args) => {
+            validate::run_validate(validate_args, cancellation_token).await
+        }
     }
 }
 

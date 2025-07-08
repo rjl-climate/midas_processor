@@ -6,3 +6,4 @@ pub mod record_processor;
 pub mod parquet_writer;
 pub mod cache_scanner;
 pub mod integration_test;
+pub mod schema_discovery;

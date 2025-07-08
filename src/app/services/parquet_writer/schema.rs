@@ -72,35 +72,18 @@ pub fn create_weather_schema() -> SchemaRef {
 
 /// Extend schema with measurement and quality flag fields
 ///
-/// This function creates measurement fields either from pre-defined schemas (if dataset_name
-/// is provided) or by analyzing observations dynamically. Pre-defined schemas enable
-/// streaming-compatible processing by avoiding the need to scan all observations first.
+/// This function analyzes observations to discover all measurement types and creates
+/// corresponding columns with proper data types. Schema is built dynamically to
+/// adapt to any dataset structure without hardcoded dependencies.
 pub fn extend_schema_with_measurements(
     base_schema: SchemaRef,
     observations: &[Observation],
 ) -> Result<SchemaRef> {
-    extend_schema_with_measurements_for_dataset(base_schema, observations, None)
-}
-
-/// Extend schema with measurement fields for a specific dataset
-///
-/// This function creates measurement fields by dynamically discovering them from
-/// actual observations, ensuring the schema matches exactly what's in the CSV data.
-/// This enables full adaptability to any dataset structure without hardcoded dependencies.
-pub fn extend_schema_with_measurements_for_dataset(
-    base_schema: SchemaRef,
-    observations: &[Observation],
-    dataset_name: Option<&str>,
-) -> Result<SchemaRef> {
     let mut additional_fields: Vec<Arc<Field>> = Vec::new();
 
-    // Always use dynamic discovery to match actual CSV data structure
     debug!(
-        "Building schema dynamically from {} observations{}",
-        observations.len(),
-        dataset_name
-            .map(|name| format!(" for dataset '{}'", name))
-            .unwrap_or_default()
+        "Building schema dynamically from {} observations",
+        observations.len()
     );
 
     let measurement_names = collect_measurement_names(observations);
@@ -122,6 +105,13 @@ pub fn extend_schema_with_measurements_for_dataset(
                 &measurement_name,
                 DataType::Utf8,
                 true, // Nullable - quality flags may be missing
+            )));
+        } else if measurement_name.starts_with("pf_") {
+            // Processing flag fields as strings (ProcessingFlag enum values)
+            additional_fields.push(Arc::new(Field::new(
+                &measurement_name,
+                DataType::Utf8,
+                true, // Nullable - processing flags may be missing
             )));
         } else {
             // Measurement fields as nullable floats
@@ -145,7 +135,7 @@ pub fn extend_schema_with_measurements_for_dataset(
     Ok(Arc::new(Schema::new(all_fields)))
 }
 
-/// Collect all unique measurement and quality flag names from observations
+/// Collect all unique measurement, quality flag, and processing flag names from observations
 fn collect_measurement_names(observations: &[Observation]) -> HashSet<String> {
     let mut measurement_names = HashSet::new();
 
@@ -156,6 +146,9 @@ fn collect_measurement_names(observations: &[Observation]) -> HashSet<String> {
         }
         for quality_flag_name in observation.quality_flags.keys() {
             measurement_names.insert(format!("q_{}", quality_flag_name));
+        }
+        for processing_flag_name in observation.processing_flags.keys() {
+            measurement_names.insert(format!("pf_{}", processing_flag_name));
         }
     }
 
@@ -178,11 +171,23 @@ pub fn is_quality_flag_field(field_name: &str) -> bool {
     field_name.starts_with("q_")
 }
 
+/// Check if a field name is a processing flag field
+pub fn is_processing_flag_field(field_name: &str) -> bool {
+    field_name.starts_with("pf_")
+}
+
 /// Get measurement name from quality flag field name
 pub fn get_measurement_from_quality_flag(quality_flag_field: &str) -> Option<String> {
     quality_flag_field
         .strip_prefix("q_")
         .map(|measurement_name| measurement_name.to_string())
+}
+
+/// Get processing target name from processing flag field name
+pub fn get_target_from_processing_flag(processing_flag_field: &str) -> Option<String> {
+    processing_flag_field
+        .strip_prefix("pf_")
+        .map(|target_name| target_name.to_string())
 }
 
 /// Validate that a schema contains all required base fields
@@ -257,6 +262,14 @@ pub fn validate_schema(schema: &Schema) -> Result<()> {
                                 field.data_type()
                             )));
                         }
+                    } else if is_processing_flag_field(field.name()) {
+                        if !matches!(field.data_type(), DataType::Utf8) {
+                            return Err(Error::data_validation(format!(
+                                "Processing flag field {} must be Utf8, found {:?}",
+                                field.name(),
+                                field.data_type()
+                            )));
+                        }
                     } else if !matches!(field.data_type(), DataType::Float64) {
                         return Err(Error::data_validation(format!(
                             "Measurement field {} must be Float64, found {:?}",
@@ -277,6 +290,7 @@ pub fn get_schema_stats(schema: &Schema) -> SchemaStats {
     let base_field_names = get_base_field_names();
     let mut measurement_fields = 0;
     let mut quality_flag_fields = 0;
+    let mut processing_flag_fields = 0;
     let mut nullable_fields = 0;
 
     for field in schema.fields() {
@@ -287,6 +301,8 @@ pub fn get_schema_stats(schema: &Schema) -> SchemaStats {
         if is_measurement_field(field.name(), &base_field_names) {
             if is_quality_flag_field(field.name()) {
                 quality_flag_fields += 1;
+            } else if is_processing_flag_field(field.name()) {
+                processing_flag_fields += 1;
             } else {
                 measurement_fields += 1;
             }
@@ -298,6 +314,7 @@ pub fn get_schema_stats(schema: &Schema) -> SchemaStats {
         base_fields: base_field_names.len(),
         measurement_fields,
         quality_flag_fields,
+        processing_flag_fields,
         nullable_fields,
     }
 }
@@ -309,6 +326,7 @@ pub struct SchemaStats {
     pub base_fields: usize,
     pub measurement_fields: usize,
     pub quality_flag_fields: usize,
+    pub processing_flag_fields: usize,
     pub nullable_fields: usize,
 }
 
@@ -318,14 +336,18 @@ impl SchemaStats {
         if self.total_fields == 0 {
             0.0
         } else {
-            ((self.measurement_fields + self.quality_flag_fields) as f64 / self.total_fields as f64)
+            ((self.measurement_fields + self.quality_flag_fields + self.processing_flag_fields)
+                as f64
+                / self.total_fields as f64)
                 * 100.0
         }
     }
 
     /// Check if the schema has any dynamic measurement fields
     pub fn has_measurements(&self) -> bool {
-        self.measurement_fields > 0 || self.quality_flag_fields > 0
+        self.measurement_fields > 0
+            || self.quality_flag_fields > 0
+            || self.processing_flag_fields > 0
     }
 }
 
@@ -366,6 +388,20 @@ mod tests {
         quality_flags.insert("air_temperature".to_string(), "0".to_string());
         quality_flags.insert("wind_speed".to_string(), "1".to_string());
 
+        let mut processing_flags = HashMap::new();
+        processing_flags.insert(
+            "air_temperature".to_string(),
+            crate::app::models::ProcessingFlag::ParseOk,
+        );
+        processing_flags.insert(
+            "wind_speed".to_string(),
+            crate::app::models::ProcessingFlag::ParseOk,
+        );
+        processing_flags.insert(
+            "station".to_string(),
+            crate::app::models::ProcessingFlag::StationFound,
+        );
+
         Observation::new(
             Utc::now(),
             24,
@@ -378,7 +414,7 @@ mod tests {
             create_test_station(),
             measurements,
             quality_flags,
-            HashMap::new(),
+            processing_flags,
             None,
             None,
         )
@@ -424,7 +460,7 @@ mod tests {
         // Should have more fields than base schema
         assert!(extended_schema.fields().len() > base_schema.fields().len());
 
-        // Should contain measurement and quality flag fields
+        // Should contain measurement, quality flag, and processing flag fields
         let field_names: HashSet<_> = extended_schema
             .fields()
             .iter()
@@ -434,6 +470,9 @@ mod tests {
         assert!(field_names.contains("wind_speed"));
         assert!(field_names.contains("q_air_temperature"));
         assert!(field_names.contains("q_wind_speed"));
+        assert!(field_names.contains("pf_air_temperature"));
+        assert!(field_names.contains("pf_wind_speed"));
+        assert!(field_names.contains("pf_station"));
 
         // Check data types
         for field in extended_schema.fields() {
@@ -446,13 +485,17 @@ mod tests {
                     assert!(matches!(field.data_type(), DataType::Utf8));
                     assert!(field.is_nullable());
                 }
+                "pf_air_temperature" | "pf_wind_speed" | "pf_station" => {
+                    assert!(matches!(field.data_type(), DataType::Utf8));
+                    assert!(field.is_nullable());
+                }
                 _ => {} // Base fields already tested
             }
         }
     }
 
     /// Test measurement name collection discovers all unique fields from observations
-    /// Ensures comprehensive coverage of both measurements and quality flags
+    /// Ensures comprehensive coverage of measurements, quality flags, and processing flags
     #[test]
     fn test_collect_measurement_names() {
         let observations = vec![create_test_observation()];
@@ -462,7 +505,10 @@ mod tests {
         assert!(names.contains("wind_speed"));
         assert!(names.contains("q_air_temperature"));
         assert!(names.contains("q_wind_speed"));
-        assert_eq!(names.len(), 4);
+        assert!(names.contains("pf_air_temperature"));
+        assert!(names.contains("pf_wind_speed"));
+        assert!(names.contains("pf_station"));
+        assert_eq!(names.len(), 7);
     }
 
     /// Test base field identification separates static from dynamic schema components
@@ -513,6 +559,33 @@ mod tests {
         assert_eq!(get_measurement_from_quality_flag("station_id"), None);
     }
 
+    /// Test processing flag identification using 'pf_' prefix convention
+    /// Ensures proper separation of processing flags from measurements and quality flags
+    #[test]
+    fn test_is_processing_flag_field() {
+        assert!(!is_processing_flag_field("air_temperature"));
+        assert!(!is_processing_flag_field("q_air_temperature"));
+        assert!(is_processing_flag_field("pf_air_temperature"));
+        assert!(is_processing_flag_field("pf_station"));
+        assert!(!is_processing_flag_field("station_id"));
+    }
+
+    /// Test processing flag to target name mapping for processing context
+    /// Enables linking processing flags to their corresponding measurements/operations
+    #[test]
+    fn test_get_target_from_processing_flag() {
+        assert_eq!(
+            get_target_from_processing_flag("pf_air_temperature"),
+            Some("air_temperature".to_string())
+        );
+        assert_eq!(
+            get_target_from_processing_flag("pf_station"),
+            Some("station".to_string())
+        );
+        assert_eq!(get_target_from_processing_flag("air_temperature"), None);
+        assert_eq!(get_target_from_processing_flag("q_air_temperature"), None);
+    }
+
     /// Test schema validation ensures Arrow compatibility and required fields
     /// Prevents runtime errors by catching schema issues before data processing
     #[test]
@@ -543,6 +616,7 @@ mod tests {
 
         assert_eq!(extended_stats.measurement_fields, 2); // air_temperature, wind_speed
         assert_eq!(extended_stats.quality_flag_fields, 2); // q_air_temperature, q_wind_speed
+        assert_eq!(extended_stats.processing_flag_fields, 3); // pf_air_temperature, pf_wind_speed, pf_station
         assert!(extended_stats.has_measurements());
         assert!(extended_stats.dynamic_field_percentage() > 0.0);
     }
@@ -556,67 +630,50 @@ mod tests {
             base_fields: 80,
             measurement_fields: 15,
             quality_flag_fields: 5,
+            processing_flag_fields: 3,
             nullable_fields: 30,
         };
 
-        assert_eq!(stats.dynamic_field_percentage(), 20.0);
+        assert_eq!(stats.dynamic_field_percentage(), 23.0); // (15+5+3)/100 = 23%
         assert!(stats.has_measurements());
 
         stats.measurement_fields = 0;
         stats.quality_flag_fields = 0;
+        stats.processing_flag_fields = 0;
         assert!(!stats.has_measurements());
         assert_eq!(stats.dynamic_field_percentage(), 0.0);
     }
 
-    /// Test dynamic schema generation for different dataset names
-    /// Validates that schema generation now uses dynamic discovery for all datasets
+    /// Test pure dynamic schema generation
+    /// Validates that schema is built correctly from observation data
     #[test]
-    fn test_dynamic_schema_generation_for_all_datasets() {
+    fn test_pure_dynamic_schema_generation() {
         let base_schema = create_weather_schema();
         let observations = vec![create_test_observation()];
 
-        // Test dynamic schema generation without dataset name
-        let schema_without_name =
-            extend_schema_with_measurements_for_dataset(base_schema.clone(), &observations, None)
-                .unwrap();
+        // Test dynamic schema generation
+        let extended_schema =
+            extend_schema_with_measurements(base_schema.clone(), &observations).unwrap();
 
-        // Test dynamic schema generation with dataset name (should behave identically)
-        let schema_with_name = extend_schema_with_measurements_for_dataset(
-            base_schema.clone(),
-            &observations,
-            Some("uk-daily-temperature-obs"),
-        )
-        .unwrap();
+        // Should have more fields than base schema
+        assert!(extended_schema.fields().len() > base_schema.fields().len());
 
-        // Both schemas should have the same number of fields since both use dynamic discovery
-        let fields_without_name = schema_without_name.fields().len();
-        let fields_with_name = schema_with_name.fields().len();
-
-        assert_eq!(
-            fields_without_name, fields_with_name,
-            "Dynamic schema should have same fields ({}) regardless of dataset name ({})",
-            fields_without_name, fields_with_name
-        );
-
-        // Both schemas should include the test observation's measurement fields
-        let field_names_without: std::collections::HashSet<String> = schema_without_name
+        // Should include the test observation's measurement fields
+        let field_names: std::collections::HashSet<String> = extended_schema
             .fields()
             .iter()
             .map(|f| f.name().clone())
             .collect();
-        let field_names_with: std::collections::HashSet<String> = schema_with_name
-            .fields()
-            .iter()
-            .map(|f| f.name().clone())
-            .collect();
-
-        // Field sets should be identical
-        assert_eq!(field_names_without, field_names_with);
 
         // The test observation has air_temperature and wind_speed
-        assert!(field_names_without.contains("air_temperature"));
-        assert!(field_names_without.contains("q_air_temperature"));
-        assert!(field_names_without.contains("wind_speed"));
-        assert!(field_names_without.contains("q_wind_speed"));
+        assert!(field_names.contains("air_temperature"));
+        assert!(field_names.contains("q_air_temperature"));
+        assert!(field_names.contains("wind_speed"));
+        assert!(field_names.contains("q_wind_speed"));
+
+        // Should include base schema fields
+        assert!(field_names.contains("ob_end_time"));
+        assert!(field_names.contains("station_id"));
+        assert!(field_names.contains("station_latitude"));
     }
 }

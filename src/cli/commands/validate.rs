@@ -8,13 +8,17 @@ use crate::cli::args::{OutputFormat, ValidateArgs};
 use crate::{Error, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 /// Validate command runner for MIDAS processor
 ///
 /// This function runs comprehensive validation tests on the processing pipeline
 /// using real MIDAS data from the cache to identify issues and generate reports.
-pub async fn run_validate(args: ValidateArgs) -> Result<ProcessingStats> {
+pub async fn run_validate(
+    args: ValidateArgs,
+    _cancellation_token: CancellationToken,
+) -> Result<ProcessingStats> {
     let start_time = Instant::now();
 
     // Set up logging

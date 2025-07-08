@@ -11,12 +11,16 @@ use chrono::TimeZone;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// Stations command runner for MIDAS processor
 ///
 /// This function generates station registry reports and visualizations.
-pub async fn run_stations(args: StationsArgs) -> Result<ProcessingStats> {
+pub async fn run_stations(
+    args: StationsArgs,
+    _cancellation_token: CancellationToken,
+) -> Result<ProcessingStats> {
     let start_time = Instant::now();
 
     // Set up logging

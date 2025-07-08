@@ -157,8 +157,10 @@ class MIDASVerifier:
         expected_columns = {
             'ob_end_time', 'ob_hour_count', 'observation_id', 'station_id', 'id_type',
             'met_domain_name', 'rec_st_ind', 'version_num', 'meto_stmp_time',
-            'midas_stmp_etime', 'src_id', 'src_name', 'high_prcn_lat', 'high_prcn_lon',
-            'authority', 'historic_county', 'height_meters'
+            'midas_stmp_etime', 'station_src_id', 'station_name', 'station_latitude', 
+            'station_longitude', 'station_authority', 'station_county', 'station_height_meters',
+            'east_grid_ref', 'north_grid_ref', 'grid_ref_type', 'station_start_date', 
+            'station_end_date'
         }
         
         actual_columns = set(parquet_df.columns)
@@ -179,11 +181,15 @@ class MIDASVerifier:
         type_checks = {
             'ob_end_time': pl.Datetime,
             'station_id': pl.Int32,
-            'high_prcn_lat': pl.Float64,
-            'high_prcn_lon': pl.Float64,
-            'height_meters': pl.Float32,
+            'station_src_id': pl.Int32,
+            'station_latitude': pl.Float64,
+            'station_longitude': pl.Float64,
+            'station_height_meters': pl.Float32,
             'rec_st_ind': pl.Int32,
             'version_num': pl.Int32,
+            'meto_stmp_time': pl.Datetime,
+            'station_start_date': pl.Datetime,
+            'station_end_date': pl.Datetime,
         }
         
         type_errors = []
@@ -253,11 +259,11 @@ class MIDASVerifier:
                 sample_records = csv_df.head(3)
                 
                 for _, record in sample_records.iterrows():
-                    # Find matching record in Parquet (by station_id and time if possible)
-                    if 'ob_end_time' in pdf.columns and 'station_id' in pdf.columns:
+                    # Find matching record in Parquet (by station_src_id and time if possible)
+                    if 'ob_end_time' in pdf.columns and 'station_src_id' in pdf.columns:
                         if 'ob_end_time' in record and 'src_id' in record:
                             matches = pdf[
-                                (pdf['station_id'] == record.get('src_id', -1)) &
+                                (pdf['station_src_id'] == record.get('src_id', -1)) &
                                 (pdf['ob_end_time'].astype(str).str.contains(str(record.get('ob_end_time', ''))[:10], na=False))
                             ]
                             
@@ -278,7 +284,7 @@ class MIDASVerifier:
     
     def _validate_station_metadata(self, parquet_df: pl.DataFrame):
         """Validate station metadata completeness and accuracy."""
-        station_columns = ['src_id', 'src_name', 'high_prcn_lat', 'high_prcn_lon', 'authority', 'historic_county']
+        station_columns = ['station_src_id', 'station_name', 'station_latitude', 'station_longitude', 'station_authority', 'station_county']
         missing_station_data = {}
         
         for col in station_columns:
@@ -298,8 +304,8 @@ class MIDASVerifier:
     
     def _validate_quality_flags(self, parquet_df: pl.DataFrame):
         """Validate that quality flags are preserved."""
-        # Look for quality flag columns (they vary by dataset)
-        qf_columns = [col for col in parquet_df.columns if col.endswith('_qf') or 'quality' in col.lower()]
+        # Look for quality flag columns with 'q_' prefix (BADC-CSV format)
+        qf_columns = [col for col in parquet_df.columns if col.startswith('q_') or col.endswith('_qf') or 'quality' in col.lower()]
         
         if not qf_columns:
             self._add_result("quality_flags", False, "No quality flag columns found", severity="WARNING")
@@ -347,10 +353,12 @@ class MIDASVerifier:
         # Look for measurement columns (typically numeric, not metadata)
         metadata_columns = {'ob_end_time', 'ob_hour_count', 'observation_id', 'station_id', 'id_type',
                           'met_domain_name', 'rec_st_ind', 'version_num', 'meto_stmp_time', 'midas_stmp_etime',
-                          'src_id', 'src_name', 'high_prcn_lat', 'high_prcn_lon', 'authority', 'historic_county', 'height_meters'}
+                          'station_src_id', 'station_name', 'station_latitude', 'station_longitude', 'station_authority', 
+                          'station_county', 'station_height_meters', 'east_grid_ref', 'north_grid_ref', 
+                          'grid_ref_type', 'station_start_date', 'station_end_date'}
         
         measurement_columns = [col for col in parquet_df.columns 
-                             if col not in metadata_columns and not col.endswith('_qf')]
+                             if col not in metadata_columns and not col.endswith('_qf') and not col.startswith('q_')]
         
         if not measurement_columns:
             self._add_result("measurements", False, "No measurement columns found")
@@ -378,7 +386,7 @@ class MIDASVerifier:
     
     def _validate_processing_flags(self, parquet_df: pl.DataFrame):
         """Validate processing flag columns that track our processing operations."""
-        processing_flag_columns = [col for col in parquet_df.columns if 'processing' in col.lower()]
+        processing_flag_columns = [col for col in parquet_df.columns if col.startswith('pf_')]
         
         if not processing_flag_columns:
             self._add_result("processing_flags", False, "No processing flag columns found", severity="WARNING")
@@ -386,7 +394,9 @@ class MIDASVerifier:
             flag_summary = {}
             for col in processing_flag_columns:
                 unique_values = parquet_df[col].unique().to_list()
-                flag_summary[col] = {"unique_count": len(unique_values), "values": unique_values}
+                # Remove None values for cleaner display
+                unique_values = [v for v in unique_values if v is not None]
+                flag_summary[col] = {"unique_count": len(unique_values), "values": unique_values[:10]}  # Limit to first 10 values
             
             self._add_result("processing_flags", True,
                            f"Found {len(processing_flag_columns)} processing flag columns",

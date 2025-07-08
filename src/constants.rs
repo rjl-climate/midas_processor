@@ -35,7 +35,7 @@ pub const QC_VERSION_ORIGINAL: &str = "qcv-0";
 /// Station metadata file patterns
 pub const STATION_METADATA_PATTERN: &str = "*.csv";
 
-/// Observation data file patterns  
+/// Observation data file patterns
 pub const OBSERVATION_FILE_PATTERN: &str = "*.csv";
 
 // =============================================================================
@@ -146,7 +146,7 @@ pub const PARQUET_MEMORY_LIMIT_BYTES: usize = 100 * 1024 * 1024; // 100MB
 // =============================================================================
 
 /// Default number of parallel workers
-pub const DEFAULT_PARALLEL_WORKERS: usize = 8;
+pub const DEFAULT_PARALLEL_WORKERS: usize = 16;
 
 /// Default memory limit in GB
 pub const DEFAULT_MEMORY_LIMIT_GB: usize = 16;
@@ -163,193 +163,6 @@ pub const DEFAULT_MEMORY_LIMIT_BYTES: usize = DEFAULT_MEMORY_LIMIT_GB * 1024 * 1
 /// Default processing quality control settings (MIDAS data quality preserved)
 pub const DEFAULT_REQUIRE_STATION_METADATA: bool = true;
 pub const DEFAULT_EXCLUDE_EMPTY_MEASUREMENTS: bool = true;
-
-// =============================================================================
-// Pre-defined Dataset Schemas for Performance Optimization
-// =============================================================================
-
-/// Pre-defined measurement columns for UK Daily Temperature Observations
-pub const UK_DAILY_TEMPERATURE_OBS_MEASUREMENTS: &[&str] = &[
-    // Core temperature measurements
-    "air_temperature",
-    "max_air_temperature",
-    "min_air_temperature",
-    "grass_temperature",
-    "concrete_temperature",
-    "soil_temperature_10cm",
-    "soil_temperature_20cm",
-    "soil_temperature_30cm",
-    "soil_temperature_100cm",
-    // Quality flags for temperature measurements
-    "air_temperature_qf",
-    "max_air_temperature_qf",
-    "min_air_temperature_qf",
-    "grass_temperature_qf",
-    "concrete_temperature_qf",
-    "soil_temperature_10cm_qf",
-    "soil_temperature_20cm_qf",
-    "soil_temperature_30cm_qf",
-    "soil_temperature_100cm_qf",
-];
-
-/// Pre-defined measurement columns for UK Daily Weather Observations
-pub const UK_DAILY_WEATHER_OBS_MEASUREMENTS: &[&str] = &[
-    // Atmospheric measurements
-    "air_temperature",
-    "max_air_temperature",
-    "min_air_temperature",
-    "relative_humidity",
-    "wind_speed",
-    "wind_direction",
-    "wind_gust_speed",
-    "air_pressure",
-    "air_pressure_station_level",
-    "rainfall",
-    "sunshine_duration",
-    "visibility",
-    "cloud_cover",
-    "snow_depth",
-    // Quality flags
-    "air_temperature_qf",
-    "max_air_temperature_qf",
-    "min_air_temperature_qf",
-    "relative_humidity_qf",
-    "wind_speed_qf",
-    "wind_direction_qf",
-    "wind_gust_speed_qf",
-    "air_pressure_qf",
-    "air_pressure_station_level_qf",
-    "rainfall_qf",
-    "sunshine_duration_qf",
-    "visibility_qf",
-    "cloud_cover_qf",
-    "snow_depth_qf",
-];
-
-/// Pre-defined measurement columns for UK Daily Rain Observations
-pub const UK_DAILY_RAIN_OBS_MEASUREMENTS: &[&str] = &[
-    // Precipitation measurements
-    "rainfall",
-    "rainfall_24h",
-    "snow_depth",
-    "snow_water_equivalent",
-    // Quality flags
-    "rainfall_qf",
-    "rainfall_24h_qf",
-    "snow_depth_qf",
-    "snow_water_equivalent_qf",
-];
-
-/// Pre-defined measurement columns for UK Hourly Weather Observations
-pub const UK_HOURLY_WEATHER_OBS_MEASUREMENTS: &[&str] = &[
-    // Hourly atmospheric measurements
-    "air_temperature",
-    "relative_humidity",
-    "dew_point_temperature",
-    "wind_speed",
-    "wind_direction",
-    "wind_gust_speed",
-    "air_pressure",
-    "air_pressure_station_level",
-    "rainfall",
-    "visibility",
-    "cloud_cover",
-    "present_weather",
-    // Quality flags
-    "air_temperature_qf",
-    "relative_humidity_qf",
-    "dew_point_temperature_qf",
-    "wind_speed_qf",
-    "wind_direction_qf",
-    "wind_gust_speed_qf",
-    "air_pressure_qf",
-    "air_pressure_station_level_qf",
-    "rainfall_qf",
-    "visibility_qf",
-    "cloud_cover_qf",
-    "present_weather_qf",
-];
-
-/// Pre-defined measurement columns for UK Hourly Rain Observations
-pub const UK_HOURLY_RAIN_OBS_MEASUREMENTS: &[&str] = &[
-    // Hourly precipitation measurements
-    "rainfall",
-    "rainfall_rate",
-    // Quality flags
-    "rainfall_qf",
-    "rainfall_rate_qf",
-];
-
-/// Pre-defined measurement columns for UK Mean Wind Observations
-pub const UK_MEAN_WIND_OBS_MEASUREMENTS: &[&str] = &[
-    // Wind measurements
-    "wind_speed",
-    "wind_direction",
-    "wind_speed_unit_id",
-    "wind_direction_unit_id",
-    // Quality flags
-    "wind_speed_qf",
-    "wind_direction_qf",
-];
-
-/// Pre-defined measurement columns for UK Radiation Observations
-pub const UK_RADIATION_OBS_MEASUREMENTS: &[&str] = &[
-    // Solar radiation measurements
-    "global_solar_radiation",
-    "diffuse_solar_radiation",
-    "direct_solar_radiation",
-    "net_radiation",
-    "longwave_radiation",
-    "par_radiation",
-    "uv_radiation",
-    // Quality flags
-    "global_solar_radiation_qf",
-    "diffuse_solar_radiation_qf",
-    "direct_solar_radiation_qf",
-    "net_radiation_qf",
-    "longwave_radiation_qf",
-    "par_radiation_qf",
-    "uv_radiation_qf",
-];
-
-/// Pre-defined measurement columns for UK Soil Temperature Observations
-pub const UK_SOIL_TEMPERATURE_OBS_MEASUREMENTS: &[&str] = &[
-    // Soil temperature at various depths
-    "soil_temperature_5cm",
-    "soil_temperature_10cm",
-    "soil_temperature_20cm",
-    "soil_temperature_30cm",
-    "soil_temperature_50cm",
-    "soil_temperature_100cm",
-    "soil_temperature_150cm",
-    "soil_temperature_300cm",
-    // Quality flags
-    "soil_temperature_5cm_qf",
-    "soil_temperature_10cm_qf",
-    "soil_temperature_20cm_qf",
-    "soil_temperature_30cm_qf",
-    "soil_temperature_50cm_qf",
-    "soil_temperature_100cm_qf",
-    "soil_temperature_150cm_qf",
-    "soil_temperature_300cm_qf",
-];
-
-/// Get pre-defined measurement columns for a dataset
-pub fn get_predefined_measurements(dataset_name: &str) -> Option<&'static [&'static str]> {
-    match dataset_name {
-        "uk-daily-temperature-obs" | "test-uk-daily-temperature-obs" => {
-            Some(UK_DAILY_TEMPERATURE_OBS_MEASUREMENTS)
-        }
-        "uk-daily-weather-obs" => Some(UK_DAILY_WEATHER_OBS_MEASUREMENTS),
-        "uk-daily-rain-obs" => Some(UK_DAILY_RAIN_OBS_MEASUREMENTS),
-        "uk-hourly-weather-obs" => Some(UK_HOURLY_WEATHER_OBS_MEASUREMENTS),
-        "uk-hourly-rain-obs" => Some(UK_HOURLY_RAIN_OBS_MEASUREMENTS),
-        "uk-mean-wind-obs" => Some(UK_MEAN_WIND_OBS_MEASUREMENTS),
-        "uk-radiation-obs" => Some(UK_RADIATION_OBS_MEASUREMENTS),
-        "uk-soil-temperature-obs" => Some(UK_SOIL_TEMPERATURE_OBS_MEASUREMENTS),
-        _ => None,
-    }
-}
 
 // =============================================================================
 // File and Directory Constants
@@ -517,7 +330,7 @@ pub fn get_output_filename(dataset_name: &str) -> String {
     format!("{}.parquet", dataset_name)
 }
 
-/// Get the expected metadata filename for a dataset  
+/// Get the expected metadata filename for a dataset
 pub fn get_metadata_filename(dataset_name: &str) -> String {
     format!("{}.metadata.json", dataset_name)
 }

@@ -8,7 +8,7 @@ use crate::app::services::parquet_writer::{
     config::{WriterConfig, WritingStats},
     conversion::observations_to_record_batch,
     progress::ProgressReporter,
-    schema::{create_weather_schema, extend_schema_with_measurements_for_dataset},
+    schema::{create_weather_schema, extend_schema_with_measurements},
 };
 use crate::{Error, Result};
 
@@ -32,8 +32,6 @@ pub struct ParquetWriter {
     config: WriterConfig,
     /// Arrow schema for the dataset
     schema: SchemaRef,
-    /// Dataset name for pre-defined schema lookup
-    dataset_name: Option<String>,
     /// Arrow writer instance
     arrow_writer: Option<ArrowWriter<std::fs::File>>,
     /// Progress reporter for user feedback
@@ -50,24 +48,10 @@ impl ParquetWriter {
     /// Create a new ParquetWriter instance
     ///
     /// This method sets up the writer with optimal configuration but does not
-    /// create the output file until the first write operation.
+    /// create the output file until the first write operation. Schema will be
+    /// determined dynamically when observations are provided.
     pub async fn new(output_path: &Path, config: WriterConfig) -> Result<Self> {
-        Self::new_with_dataset(output_path, config, None).await
-    }
-
-    /// Create a new ParquetWriter instance with dataset name for pre-defined schema
-    ///
-    /// This method enables streaming-compatible processing by using pre-defined schemas
-    /// when the dataset name is known, avoiding the need to scan observations for schema discovery.
-    pub async fn new_with_dataset(
-        output_path: &Path,
-        config: WriterConfig,
-        dataset_name: Option<&str>,
-    ) -> Result<Self> {
         info!("Creating ParquetWriter for {}", output_path.display());
-        if let Some(dataset) = dataset_name {
-            info!("Using dataset-specific optimizations for '{}'", dataset);
-        }
 
         // Validate configuration
         config.validate().map_err(Error::configuration)?;
@@ -79,7 +63,6 @@ impl ParquetWriter {
             output_path: output_path.to_path_buf(),
             config,
             schema,
-            dataset_name: dataset_name.map(|s| s.to_string()),
             arrow_writer: None,
             progress_reporter: ProgressReporter::new(),
             stats: WritingStats::default(),
@@ -215,11 +198,7 @@ impl ParquetWriter {
         );
 
         // Extend schema with measurement fields found in the data
-        self.schema = extend_schema_with_measurements_for_dataset(
-            self.schema.clone(),
-            sample_observations,
-            self.dataset_name.as_deref(),
-        )?;
+        self.schema = extend_schema_with_measurements(self.schema.clone(), sample_observations)?;
 
         debug!("Final schema has {} fields", self.schema.fields().len());
         for (i, field) in self.schema.fields().iter().enumerate() {
@@ -407,15 +386,6 @@ pub async fn create_optimized_writer(
     output_path: &Path,
     estimated_observations: usize,
 ) -> Result<ParquetWriter> {
-    create_optimized_writer_with_dataset(output_path, estimated_observations, None).await
-}
-
-/// Create a ParquetWriter with recommended configuration for a dataset size and type
-pub async fn create_optimized_writer_with_dataset(
-    output_path: &Path,
-    estimated_observations: usize,
-    dataset_name: Option<&str>,
-) -> Result<ParquetWriter> {
     let config = if estimated_observations < 10_000 {
         // Small dataset - optimize for simplicity
         WriterConfig::new()
@@ -436,7 +406,7 @@ pub async fn create_optimized_writer_with_dataset(
             .with_memory_limit_mb(200)
     };
 
-    ParquetWriter::new_with_dataset(output_path, config, dataset_name).await
+    ParquetWriter::new(output_path, config).await
 }
 
 /// Estimate the output file size based on observations

@@ -214,7 +214,16 @@ pub fn parse_station_record(
         .parse::<chrono::DateTime<chrono::Utc>>()
         .map_err(|_| Error::data_validation("Invalid src_end_date format".to_string()))?;
 
-    let authority = parse_required("authority")?;
+    // Helper function to parse authority field, allowing "NA" as a valid value
+    let parse_authority = || -> Result<String> {
+        fields
+            .get("authority")
+            .filter(|&val| !val.is_empty())
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::data_validation("Missing required field: authority".to_string()))
+    };
+
+    let authority = parse_authority()?;
     let historic_county = parse_required("historic_county")?;
 
     let height_meters: f32 = parse_required("height_meters")?
@@ -272,6 +281,15 @@ pub fn parse_station_metadata_record(
             .ok_or_else(|| Error::data_validation(format!("Missing required field: {}", key)))
     };
 
+    // Helper function to parse authority field, allowing "NA" as a valid value
+    let parse_authority = || -> Result<String> {
+        fields
+            .get("authority")
+            .filter(|&val| !val.is_empty())
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::data_validation("Missing required field: authority".to_string()))
+    };
+
     // Parse station fields using station metadata file format
     let src_id: i32 = parse_required("src_id")?
         .parse()
@@ -314,7 +332,7 @@ pub fn parse_station_metadata_record(
         .unwrap()
         .and_utc();
 
-    let authority = parse_required("authority")?;
+    let authority = parse_authority()?;
     let historic_county = parse_required("historic_county")?;
 
     let height_meters: f32 = parse_required("station_elevation")?
@@ -635,5 +653,158 @@ mod tests {
             }
             _ => panic!("Expected DataValidation error"),
         }
+    }
+
+    #[test]
+    fn test_parse_station_metadata_record_with_na_authority() {
+        let headers = StringRecord::from(vec![
+            "src_id",
+            "station_name",
+            "station_latitude",
+            "station_longitude",
+            "first_year",
+            "last_year",
+            "authority",
+            "historic_county",
+            "station_elevation",
+        ]);
+
+        let record = StringRecord::from(vec![
+            "12345",
+            "TEST_STATION",
+            "51.4778",
+            "-0.4614",
+            "2000",
+            "2050",
+            "NA", // NA authority value
+            "Greater London",
+            "25.0",
+        ]);
+
+        let result = parse_station_metadata_record(&record, &headers).unwrap();
+        assert!(result.is_some());
+
+        let station = result.unwrap();
+        assert_eq!(station.src_id, 12345);
+        assert_eq!(station.src_name, "TEST_STATION");
+        assert_eq!(station.authority, "NA"); // NA should be preserved as valid
+        assert_eq!(station.historic_county, "Greater London");
+    }
+
+    #[test]
+    fn test_parse_station_metadata_record_with_empty_authority() {
+        let headers = StringRecord::from(vec![
+            "src_id",
+            "station_name",
+            "station_latitude",
+            "station_longitude",
+            "first_year",
+            "last_year",
+            "authority",
+            "historic_county",
+            "station_elevation",
+        ]);
+
+        let record = StringRecord::from(vec![
+            "12345",
+            "TEST_STATION",
+            "51.4778",
+            "-0.4614",
+            "2000",
+            "2050",
+            "", // Empty authority value
+            "Greater London",
+            "25.0",
+        ]);
+
+        let result = parse_station_metadata_record(&record, &headers);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::DataValidation { message } => {
+                assert!(message.contains("Missing required field: authority"));
+            }
+            _ => panic!("Expected DataValidation error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_station_metadata_record_with_normal_authority() {
+        let headers = StringRecord::from(vec![
+            "src_id",
+            "station_name",
+            "station_latitude",
+            "station_longitude",
+            "first_year",
+            "last_year",
+            "authority",
+            "historic_county",
+            "station_elevation",
+        ]);
+
+        let record = StringRecord::from(vec![
+            "12345",
+            "TEST_STATION",
+            "51.4778",
+            "-0.4614",
+            "2000",
+            "2050",
+            "Met Office", // Normal authority value
+            "Greater London",
+            "25.0",
+        ]);
+
+        let result = parse_station_metadata_record(&record, &headers).unwrap();
+        assert!(result.is_some());
+
+        let station = result.unwrap();
+        assert_eq!(station.src_id, 12345);
+        assert_eq!(station.src_name, "TEST_STATION");
+        assert_eq!(station.authority, "Met Office");
+        assert_eq!(station.historic_county, "Greater London");
+    }
+
+    #[test]
+    fn test_parse_station_record_with_na_authority() {
+        let headers = StringRecord::from(vec![
+            "src_id",
+            "src_name",
+            "high_prcn_lat",
+            "high_prcn_lon",
+            "east_grid_ref",
+            "north_grid_ref",
+            "grid_ref_type",
+            "src_bgn_date",
+            "src_end_date",
+            "authority",
+            "historic_county",
+            "height_meters",
+            "rec_st_ind",
+        ]);
+
+        let record = StringRecord::from(vec![
+            "12345",
+            "TEST_STATION",
+            "51.4778",
+            "-0.4614",
+            "507500",
+            "176500",
+            "OSGB",
+            "2000-01-01T00:00:00Z",
+            "2050-12-31T23:59:59Z",
+            "NA", // NA authority value
+            "Greater London",
+            "25.0",
+            "9",
+        ]);
+
+        let result = parse_station_record(&record, &headers).unwrap();
+        assert!(result.is_some());
+
+        let station = result.unwrap();
+        assert_eq!(station.src_id, 12345);
+        assert_eq!(station.src_name, "TEST_STATION");
+        assert_eq!(station.authority, "NA"); // NA should be preserved as valid
+        assert_eq!(station.historic_county, "Greater London");
     }
 }

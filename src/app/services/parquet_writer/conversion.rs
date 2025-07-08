@@ -109,13 +109,16 @@ fn create_array_for_field(field_name: &str, observations: &[Observation]) -> Res
             create_optional_int32_array(observations, |obs| obs.midas_stmp_etime)?
         }
 
-        // Dynamic measurement and quality flag fields
+        // Dynamic measurement, quality flag, and processing flag fields
         field_name => {
             if let Some(measurement_name) = field_name.strip_prefix("q_") {
                 // Quality flag field - extract the measurement name
                 create_optional_string_array(observations, |obs| {
                     obs.quality_flags.get(measurement_name).map(|s| s.as_str())
                 })?
+            } else if let Some(target_name) = field_name.strip_prefix("pf_") {
+                // Processing flag field - extract the target name and convert enum to string
+                create_processing_flag_array(observations, target_name)?
             } else {
                 // Measurement field
                 create_optional_float64_array(observations, |obs| {
@@ -215,6 +218,22 @@ where
     Ok(Arc::new(StringArray::from(values)))
 }
 
+/// Create a nullable string array for processing flags with enum to string conversion
+fn create_processing_flag_array(
+    observations: &[Observation],
+    target_name: &str,
+) -> Result<ArrayRef> {
+    let values: Vec<Option<String>> = observations
+        .iter()
+        .map(|obs| {
+            obs.processing_flags
+                .get(target_name)
+                .map(|flag| flag.to_string())
+        })
+        .collect();
+    Ok(Arc::new(StringArray::from(values)))
+}
+
 /// Validate that observations can be converted to the given schema
 pub fn validate_observations_for_schema(
     observations: &[Observation],
@@ -229,6 +248,7 @@ pub fn validate_observations_for_schema(
     // Check that all required measurements are present in at least one observation
     let mut found_measurements = std::collections::HashSet::new();
     let mut found_quality_flags = std::collections::HashSet::new();
+    let mut found_processing_flags = std::collections::HashSet::new();
 
     for observation in observations {
         for measurement_name in observation.measurements.keys() {
@@ -236,6 +256,9 @@ pub fn validate_observations_for_schema(
         }
         for quality_flag_name in observation.quality_flags.keys() {
             found_quality_flags.insert(format!("q_{}", quality_flag_name));
+        }
+        for processing_flag_name in observation.processing_flags.keys() {
+            found_processing_flags.insert(format!("pf_{}", processing_flag_name));
         }
     }
 
@@ -246,6 +269,13 @@ pub fn validate_observations_for_schema(
             if !found_quality_flags.contains(field_name) {
                 debug!(
                     "Quality flag field '{}' not found in any observation",
+                    field_name
+                );
+            }
+        } else if field_name.starts_with("pf_") {
+            if !found_processing_flags.contains(field_name) {
+                debug!(
+                    "Processing flag field '{}' not found in any observation",
                     field_name
                 );
             }
@@ -293,8 +323,10 @@ fn is_base_field(field_name: &str) -> bool {
 pub fn get_conversion_stats(observations: &[Observation]) -> ConversionStats {
     let mut unique_measurements = std::collections::HashSet::new();
     let mut unique_quality_flags = std::collections::HashSet::new();
+    let mut unique_processing_flags = std::collections::HashSet::new();
     let mut total_measurements = 0;
     let mut total_quality_flags = 0;
+    let mut total_processing_flags = 0;
     let mut null_measurements = 0;
     let mut null_quality_flags = 0;
 
@@ -314,14 +346,21 @@ pub fn get_conversion_stats(observations: &[Observation]) -> ConversionStats {
                 null_quality_flags += 1;
             }
         }
+
+        for processing_flag_name in observation.processing_flags.keys() {
+            unique_processing_flags.insert(processing_flag_name.clone());
+            total_processing_flags += 1;
+        }
     }
 
     ConversionStats {
         total_observations: observations.len(),
         unique_measurement_types: unique_measurements.len(),
         unique_quality_flag_types: unique_quality_flags.len(),
+        unique_processing_flag_types: unique_processing_flags.len(),
         total_measurements,
         total_quality_flags,
+        total_processing_flags,
         null_measurements,
         null_quality_flags,
     }
@@ -333,8 +372,10 @@ pub struct ConversionStats {
     pub total_observations: usize,
     pub unique_measurement_types: usize,
     pub unique_quality_flag_types: usize,
+    pub unique_processing_flag_types: usize,
     pub total_measurements: usize,
     pub total_quality_flags: usize,
+    pub total_processing_flags: usize,
     pub null_measurements: usize,
     pub null_quality_flags: usize,
 }
@@ -373,6 +414,15 @@ impl ConversionStats {
             0.0
         } else {
             self.total_quality_flags as f64 / self.total_observations as f64
+        }
+    }
+
+    /// Calculate average processing flags per observation
+    pub fn avg_processing_flags_per_observation(&self) -> f64 {
+        if self.total_observations == 0 {
+            0.0
+        } else {
+            self.total_processing_flags as f64 / self.total_observations as f64
         }
     }
 }
@@ -415,6 +465,20 @@ mod tests {
         quality_flags.insert("air_temperature".to_string(), "0".to_string());
         quality_flags.insert("wind_speed".to_string(), "1".to_string());
 
+        let mut processing_flags = HashMap::new();
+        processing_flags.insert(
+            "air_temperature".to_string(),
+            crate::app::models::ProcessingFlag::ParseOk,
+        );
+        processing_flags.insert(
+            "wind_speed".to_string(),
+            crate::app::models::ProcessingFlag::ParseOk,
+        );
+        processing_flags.insert(
+            "station".to_string(),
+            crate::app::models::ProcessingFlag::StationFound,
+        );
+
         Observation::new(
             Utc::now(),
             24,
@@ -427,7 +491,7 @@ mod tests {
             create_test_station(),
             measurements,
             quality_flags,
-            HashMap::new(),
+            processing_flags,
             None,
             None,
         )
@@ -626,8 +690,10 @@ mod tests {
         assert_eq!(stats.total_observations, 3);
         assert_eq!(stats.unique_measurement_types, 2); // air_temperature, wind_speed
         assert_eq!(stats.unique_quality_flag_types, 2); // air_temperature, wind_speed
+        assert_eq!(stats.unique_processing_flag_types, 3); // air_temperature, wind_speed, station
         assert_eq!(stats.total_measurements, 6); // 3 observations * 2 measurements each
         assert_eq!(stats.total_quality_flags, 6); // 3 observations * 2 quality flags each
+        assert_eq!(stats.total_processing_flags, 9); // 3 observations * 3 processing flags each
         assert_eq!(stats.null_measurements, 0);
         assert_eq!(stats.null_quality_flags, 0);
     }
@@ -640,8 +706,10 @@ mod tests {
             total_observations: 100,
             unique_measurement_types: 5,
             unique_quality_flag_types: 5,
+            unique_processing_flag_types: 3,
             total_measurements: 400,
             total_quality_flags: 300,
+            total_processing_flags: 250,
             null_measurements: 20,
             null_quality_flags: 15,
         };
@@ -660,8 +728,10 @@ mod tests {
             total_observations: 0,
             unique_measurement_types: 0,
             unique_quality_flag_types: 0,
+            unique_processing_flag_types: 0,
             total_measurements: 0,
             total_quality_flags: 0,
+            total_processing_flags: 0,
             null_measurements: 0,
             null_quality_flags: 0,
         };
@@ -670,5 +740,30 @@ mod tests {
         assert_eq!(empty_stats.null_quality_flag_percentage(), 0.0);
         assert_eq!(empty_stats.avg_measurements_per_observation(), 0.0);
         assert_eq!(empty_stats.avg_quality_flags_per_observation(), 0.0);
+        assert_eq!(empty_stats.avg_processing_flags_per_observation(), 0.0);
+    }
+
+    /// Test processing flag array creation converts enum values to strings
+    /// Validates that ProcessingFlag enum values are properly serialized for Parquet
+    #[test]
+    fn test_create_processing_flag_array() {
+        let observations = vec![create_test_observation()];
+        let array = create_processing_flag_array(&observations, "air_temperature").unwrap();
+
+        assert_eq!(array.len(), 1);
+        let string_array = array.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(string_array.value(0), "ParseOk");
+    }
+
+    /// Test processing flag field extraction in create_array_for_field
+    /// Ensures that pf_ prefixed fields are correctly handled during conversion
+    #[test]
+    fn test_create_array_for_processing_flag_field() {
+        let observations = vec![create_test_observation()];
+        let array = create_array_for_field("pf_station", &observations).unwrap();
+
+        assert_eq!(array.len(), 1);
+        let string_array = array.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(string_array.value(0), "StationFound");
     }
 }

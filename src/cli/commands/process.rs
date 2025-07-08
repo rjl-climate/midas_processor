@@ -18,6 +18,7 @@ use crate::{Error, Result};
 use indicatif::HumanDuration;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Process command runner for MIDAS processor
@@ -27,7 +28,10 @@ use tracing::{debug, error, info, warn};
 /// 2. Validate inputs and create output directories
 /// 3. Process datasets with progress reporting
 /// 4. Generate summary statistics
-pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
+pub async fn run_process(
+    args: ProcessArgs,
+    cancellation_token: CancellationToken,
+) -> Result<ProcessingStats> {
     let start_time = Instant::now();
 
     // Set up logging
@@ -92,6 +96,14 @@ pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
     };
 
     for (i, dataset) in datasets.iter().enumerate() {
+        // Check for cancellation before processing each dataset
+        if cancellation_token.is_cancelled() {
+            info!("Processing cancelled by user");
+            return Err(Error::processing_interrupted(
+                "Processing interrupted by user".to_string(),
+            ));
+        }
+
         info!(
             "Processing dataset {} of {}: {}",
             i + 1,
@@ -99,7 +111,14 @@ pub async fn run_process(args: ProcessArgs) -> Result<ProcessingStats> {
             dataset
         );
 
-        match process_dataset(&config, dataset, args.show_progress()).await {
+        match process_dataset(
+            &config,
+            dataset,
+            args.show_progress(),
+            cancellation_token.clone(),
+        )
+        .await
+        {
             Ok(dataset_stats) => {
                 stats.files_processed += dataset_stats.files_processed;
                 stats.stations_loaded += dataset_stats.stations_loaded;
@@ -176,6 +195,7 @@ async fn process_dataset(
     config: &Config,
     dataset: &str,
     show_progress: bool,
+    cancellation_token: CancellationToken,
 ) -> Result<ProcessingStats> {
     info!("Processing dataset: {}", dataset);
     let start_time = Instant::now();
@@ -232,7 +252,7 @@ async fn process_dataset(
         );
 
         let parallel_result = processor
-            .process_files_parallel(&csv_files, show_progress)
+            .process_files_parallel(&csv_files, show_progress, cancellation_token)
             .await?;
 
         // Calculate output file size
