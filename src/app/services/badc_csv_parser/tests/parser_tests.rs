@@ -394,6 +394,7 @@ end data"#;
         authority: "Met Office".to_string(),
         historic_county: "Test County".to_string(),
         height_meters: 25.0,
+        id_history: Vec::new(),
     };
 
     // Add the station to registry (this requires accessing internals)

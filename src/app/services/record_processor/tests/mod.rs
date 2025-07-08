@@ -33,6 +33,7 @@ pub fn create_test_station(src_id: i32, name: &str) -> Station {
         authority: "Met Office".to_string(),
         historic_county: "Greater London".to_string(),
         height_meters: 25.0,
+        id_history: Vec::new(),
     }
 }
 

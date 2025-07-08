@@ -6,7 +6,8 @@
 use super::StationRegistry;
 use super::metadata::LoadStats;
 use super::parser::{
-    extract_capability_metadata, parse_capability_station_metadata, parse_station_metadata_record,
+    extract_capability_metadata, parse_capability_station_metadata, parse_id_evolution_record,
+    parse_station_metadata_record,
 };
 use crate::app::models::Station;
 use crate::constants::CAPABILITY_DIR_NAME;
@@ -390,6 +391,10 @@ impl StationRegistry {
         let mut record = StringRecord::new();
         let mut total_records = 0;
 
+        let mut in_data_section = false;
+        let mut headers: Option<StringRecord> = None;
+        let mut id_periods = Vec::new();
+
         while reader.read_record(&mut record).map_err(|e| {
             Error::csv_parsing(
                 file_path.to_string_lossy().to_string(),
@@ -397,24 +402,51 @@ impl StationRegistry {
                 Some(e),
             )
         })? {
-            // Stop when we reach the data section
+            // Check for data section marker
             if record.get(0).is_some_and(|val| val.trim() == "data") {
+                in_data_section = true;
+                continue;
+            }
+
+            // Check for end data marker
+            if record.get(0).is_some_and(|val| val.trim() == "end data") {
                 break;
             }
 
             total_records += 1;
 
-            // Extract station metadata from header record
-            extract_capability_metadata(&record, &mut station_metadata);
+            if !in_data_section {
+                // Extract station metadata from header record
+                extract_capability_metadata(&record, &mut station_metadata);
+            } else {
+                // Parse data section - first record after "data" should be headers
+                if headers.is_none() {
+                    headers = Some(record.clone());
+                    continue;
+                }
+
+                // Parse ID evolution records
+                if let Some(ref header_record) = headers {
+                    if let Ok(id_period) = parse_id_evolution_record(&record, header_record) {
+                        id_periods.push(id_period);
+                    }
+                }
+            }
         }
 
         // Extract required station metadata from header
-        let station = parse_capability_station_metadata(&station_metadata, file_path)?;
+        let mut station = parse_capability_station_metadata(&station_metadata, file_path)?;
+
+        // Add ID evolution history to station
+        for id_period in id_periods {
+            station.add_id_period(id_period);
+        }
 
         debug!(
-            "Loaded station {} from capability file {}",
+            "Loaded station {} from capability file {} (ID periods: {})",
             station.src_id,
-            file_path.display()
+            file_path.display(),
+            station.id_history.len()
         );
 
         Ok((vec![station], total_records))
@@ -742,6 +774,105 @@ end data
         let summary = stats.summary();
         assert!(summary.contains("1 datasets"));
         assert!(summary.contains("1 files"));
+    }
+
+    #[tokio::test]
+    async fn test_id_evolution_parsing() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test_id_evolution.csv");
+
+        // Create a capability file with ID evolution data like London Weather Centre
+        let content = r#"Conventions,G,BADC-CSV,1
+title,G,Midas Open: Station capability information for uk-radiation-obs
+source,G,Met Office MIDAS database
+creator,G,Met Office
+observation_station,G,LONDON WEATHER CENTRE
+src_id,G,19144
+location,G,51.4776,-0.4613
+height,G,25,m
+date_valid,G,1958-01-01 00:00:00,2006-12-31 23:59:59
+authority,G,Met Office
+historic_county_name,G,greater-london
+data
+id,id_type,met_domain_name,first_year,last_year
+5046,DCNN,MODLERAD,1958,1992
+5037,DCNN,MODLERAD,1992,1997
+5047,DCNN,MODLERAD,1997,2006
+2188,DCNN,MODLERAD,2004,2004
+end data
+"#;
+
+        std::fs::write(&file_path, content).unwrap();
+
+        let (stations, _total_records) = StationRegistry::load_capability_file(&file_path)
+            .await
+            .unwrap();
+
+        // Should return 1 station with ID evolution data
+        assert_eq!(stations.len(), 1);
+        let station = &stations[0];
+
+        // Verify station basic info
+        assert_eq!(station.src_id, 19144);
+        assert_eq!(station.src_name, "LONDON WEATHER CENTRE");
+
+        // Verify ID evolution history was parsed
+        assert_eq!(station.id_history.len(), 4);
+        assert!(station.has_id_history());
+
+        // Verify specific ID periods
+        let id_5046 = station.find_observation_id_for_year(1980);
+        assert!(id_5046.is_some());
+        assert_eq!(id_5046.unwrap().observation_id, "5046");
+        assert_eq!(id_5046.unwrap().first_year, 1958);
+        assert_eq!(id_5046.unwrap().last_year, 1992);
+
+        let id_5037 = station.find_observation_id_for_year(1995);
+        assert!(id_5037.is_some());
+        assert_eq!(id_5037.unwrap().observation_id, "5037");
+
+        let id_5047 = station.find_observation_id_for_year(2002);
+        assert!(id_5047.is_some());
+        assert_eq!(id_5047.unwrap().observation_id, "5047");
+
+        let id_2188 = station.find_observation_id_for_year(2004);
+        // Should find one of the overlapping IDs (depends on iteration order)
+        assert!(id_2188.is_some());
+
+        // Verify all observation IDs are tracked
+        let all_ids = station.get_all_observation_ids();
+        assert_eq!(all_ids.len(), 4);
+        assert!(all_ids.contains(&"5046"));
+        assert!(all_ids.contains(&"5037"));
+        assert!(all_ids.contains(&"5047"));
+        assert!(all_ids.contains(&"2188"));
+
+        // Verify overlap detection
+        let issues = station.analyze_id_evolution();
+        assert!(!issues.is_empty()); // Should detect overlap between 5047 and 2188
+
+        println!("✅ ID evolution parsing test completed successfully");
+        println!(
+            "   Station {} has {} ID periods",
+            station.src_id,
+            station.id_history.len()
+        );
+        for period in &station.id_history {
+            println!(
+                "   ID {}: {}-{} ({} {})",
+                period.observation_id,
+                period.first_year,
+                period.last_year,
+                period.id_type,
+                period.met_domain_name
+            );
+        }
+        if !issues.is_empty() {
+            println!("   Issues detected:");
+            for issue in issues {
+                println!("     - {}", issue);
+            }
+        }
     }
 
     #[tokio::test]

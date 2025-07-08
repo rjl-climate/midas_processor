@@ -7,7 +7,7 @@ pub mod audit;
 
 use crate::constants::{self, quality_flags, record_status};
 use crate::{Error, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -77,6 +77,87 @@ impl std::fmt::Display for ProcessingFlag {
 }
 
 // =============================================================================
+// ID Evolution Structure
+// =============================================================================
+
+/// Represents a period when a specific observation ID was used for a station
+///
+/// MIDAS stations often change their observation IDs over time while remaining
+/// the same physical station. This structure tracks those changes to enable
+/// analysis across ID transitions and understand measurement continuity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdPeriod {
+    /// The observation ID used during this period (e.g., "5046", "5037")
+    pub observation_id: String,
+
+    /// ID type classification (e.g., "DCNN", "SRCE")
+    pub id_type: String,
+
+    /// Meteorological domain name (e.g., "MODLERAD", "NCM")
+    pub met_domain_name: String,
+
+    /// First year this ID was valid for the station
+    pub first_year: i32,
+
+    /// Last year this ID was valid for the station
+    pub last_year: i32,
+
+    /// Context for why this ID was used (derived from analysis)
+    /// Examples: "primary", "backup", "instrument_change", "overlap"
+    pub context: String,
+}
+
+impl IdPeriod {
+    /// Create a new ID period
+    pub fn new(
+        observation_id: String,
+        id_type: String,
+        met_domain_name: String,
+        first_year: i32,
+        last_year: i32,
+    ) -> Self {
+        // Determine context based on temporal patterns
+        let context = if first_year == last_year {
+            "backup".to_string()
+        } else {
+            "primary".to_string()
+        };
+
+        Self {
+            observation_id,
+            id_type,
+            met_domain_name,
+            first_year,
+            last_year,
+            context,
+        }
+    }
+
+    /// Check if this ID period was active during a specific year
+    pub fn is_active_in_year(&self, year: i32) -> bool {
+        year >= self.first_year && year <= self.last_year
+    }
+
+    /// Get the duration of this ID period in years
+    pub fn duration_years(&self) -> i32 {
+        self.last_year - self.first_year + 1
+    }
+
+    /// Convert first/last year to DateTime range for Parquet export
+    pub fn to_datetime_range(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+        let start = Utc
+            .with_ymd_and_hms(self.first_year, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap_or_else(Utc::now);
+        let end = Utc
+            .with_ymd_and_hms(self.last_year, 12, 31, 23, 59, 59)
+            .single()
+            .unwrap_or_else(Utc::now);
+        (start, end)
+    }
+}
+
+// =============================================================================
 // Station Metadata Structure
 // =============================================================================
 
@@ -125,6 +206,11 @@ pub struct Station {
 
     /// Station elevation above sea level in meters
     pub height_meters: f32,
+
+    /// Observation ID evolution history for this station
+    /// Contains the different observation IDs used over time periods
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub id_history: Vec<IdPeriod>,
 }
 
 impl Station {
@@ -157,6 +243,7 @@ impl Station {
             authority,
             historic_county,
             height_meters,
+            id_history: Vec::new(),
         };
 
         station.validate()?;
@@ -281,6 +368,305 @@ impl Station {
             (Some(east), Some(north), Some(grid_type)) => Some((east, north, grid_type)),
             _ => None,
         }
+    }
+
+    /// Add an ID period to the station's history
+    pub fn add_id_period(&mut self, id_period: IdPeriod) {
+        self.id_history.push(id_period);
+        // Sort by first year to maintain chronological order
+        self.id_history.sort_by_key(|p| p.first_year);
+    }
+
+    /// Find the observation ID that was active during a specific year
+    pub fn find_observation_id_for_year(&self, year: i32) -> Option<&IdPeriod> {
+        self.id_history
+            .iter()
+            .find(|period| period.is_active_in_year(year))
+    }
+
+    /// Get all observation IDs used by this station
+    pub fn get_all_observation_ids(&self) -> Vec<&str> {
+        self.id_history
+            .iter()
+            .map(|period| period.observation_id.as_str())
+            .collect()
+    }
+
+    /// Check if this station has ID evolution data
+    pub fn has_id_history(&self) -> bool {
+        !self.id_history.is_empty()
+    }
+
+    /// Analyze ID evolution patterns for quality assessment
+    pub fn analyze_id_evolution(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+
+        if self.id_history.is_empty() {
+            return issues;
+        }
+
+        // Check for gaps between ID periods
+        for i in 1..self.id_history.len() {
+            let prev = &self.id_history[i - 1];
+            let curr = &self.id_history[i];
+
+            if prev.last_year + 1 < curr.first_year {
+                issues.push(format!(
+                    "Gap in ID coverage: {} ends in {}, {} starts in {}",
+                    prev.observation_id, prev.last_year, curr.observation_id, curr.first_year
+                ));
+            }
+        }
+
+        // Check for overlapping periods
+        for i in 0..self.id_history.len() {
+            for j in i + 1..self.id_history.len() {
+                let period_a = &self.id_history[i];
+                let period_b = &self.id_history[j];
+
+                if period_a.first_year <= period_b.last_year
+                    && period_a.last_year >= period_b.first_year
+                {
+                    issues.push(format!(
+                        "Overlapping ID periods: {} ({}-{}) and {} ({}-{})",
+                        period_a.observation_id,
+                        period_a.first_year,
+                        period_a.last_year,
+                        period_b.observation_id,
+                        period_b.first_year,
+                        period_b.last_year
+                    ));
+                }
+            }
+        }
+
+        issues
+    }
+}
+
+#[cfg(test)]
+mod tests_id_evolution {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn test_id_period_creation() {
+        let period = IdPeriod::new(
+            "5046".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1958,
+            1992,
+        );
+
+        assert_eq!(period.observation_id, "5046");
+        assert_eq!(period.id_type, "DCNN");
+        assert_eq!(period.met_domain_name, "MODLERAD");
+        assert_eq!(period.first_year, 1958);
+        assert_eq!(period.last_year, 1992);
+        assert_eq!(period.context, "primary"); // Multi-year period is primary
+        assert_eq!(period.duration_years(), 35);
+    }
+
+    #[test]
+    fn test_id_period_backup_context() {
+        let period = IdPeriod::new(
+            "2188".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            2004,
+            2004,
+        );
+
+        assert_eq!(period.context, "backup"); // Single year period is backup
+        assert_eq!(period.duration_years(), 1);
+    }
+
+    #[test]
+    fn test_id_period_activity() {
+        let period = IdPeriod::new(
+            "5046".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1958,
+            1992,
+        );
+
+        assert!(period.is_active_in_year(1958)); // First year
+        assert!(period.is_active_in_year(1980)); // Middle year
+        assert!(period.is_active_in_year(1992)); // Last year
+        assert!(!period.is_active_in_year(1957)); // Before
+        assert!(!period.is_active_in_year(1993)); // After
+    }
+
+    #[test]
+    fn test_id_period_datetime_conversion() {
+        let period = IdPeriod::new(
+            "5046".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1958,
+            1992,
+        );
+
+        let (start, end) = period.to_datetime_range();
+        assert_eq!(start, Utc.with_ymd_and_hms(1958, 1, 1, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(1992, 12, 31, 23, 59, 59).unwrap());
+    }
+
+    #[test]
+    fn test_station_id_history() {
+        let mut station = Station::new(
+            19144,
+            "LONDON WEATHER CENTRE".to_string(),
+            51.4776,
+            -0.4613,
+            None,
+            None,
+            None,
+            Utc.with_ymd_and_hms(1958, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2006, 12, 31, 23, 59, 59).unwrap(),
+            "Met Office".to_string(),
+            "Greater London".to_string(),
+            25.0,
+        )
+        .unwrap();
+
+        assert!(!station.has_id_history());
+        assert_eq!(station.get_all_observation_ids().len(), 0);
+
+        // Add ID periods (London Weather Centre history)
+        station.add_id_period(IdPeriod::new(
+            "5046".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1958,
+            1992,
+        ));
+        station.add_id_period(IdPeriod::new(
+            "5037".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1992,
+            1997,
+        ));
+        station.add_id_period(IdPeriod::new(
+            "5047".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1997,
+            2006,
+        ));
+
+        assert!(station.has_id_history());
+        assert_eq!(station.id_history.len(), 3);
+
+        // Test lookups by year
+        let id_1980 = station.find_observation_id_for_year(1980);
+        assert!(id_1980.is_some());
+        assert_eq!(id_1980.unwrap().observation_id, "5046");
+
+        let id_1995 = station.find_observation_id_for_year(1995);
+        assert!(id_1995.is_some());
+        assert_eq!(id_1995.unwrap().observation_id, "5037");
+
+        let id_2002 = station.find_observation_id_for_year(2002);
+        assert!(id_2002.is_some());
+        assert_eq!(id_2002.unwrap().observation_id, "5047");
+
+        // Test edge case - year not covered
+        let id_2010 = station.find_observation_id_for_year(2010);
+        assert!(id_2010.is_none());
+
+        // Test all IDs are tracked
+        let all_ids = station.get_all_observation_ids();
+        assert_eq!(all_ids.len(), 3);
+        assert!(all_ids.contains(&"5046"));
+        assert!(all_ids.contains(&"5037"));
+        assert!(all_ids.contains(&"5047"));
+    }
+
+    #[test]
+    fn test_station_id_evolution_analysis() {
+        let mut station = Station::new(
+            19144,
+            "LONDON WEATHER CENTRE".to_string(),
+            51.4776,
+            -0.4613,
+            None,
+            None,
+            None,
+            Utc.with_ymd_and_hms(1958, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2006, 12, 31, 23, 59, 59).unwrap(),
+            "Met Office".to_string(),
+            "Greater London".to_string(),
+            25.0,
+        )
+        .unwrap();
+
+        // Test with no history
+        let issues = station.analyze_id_evolution();
+        assert!(issues.is_empty());
+
+        // Add overlapping periods (should detect overlap)
+        station.add_id_period(IdPeriod::new(
+            "5046".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1958,
+            1992,
+        ));
+        station.add_id_period(IdPeriod::new(
+            "5037".to_string(),
+            "DCNN".to_string(),
+            "MODLERAD".to_string(),
+            1992, // Overlaps with 5046's last year
+            1997,
+        ));
+
+        let issues = station.analyze_id_evolution();
+        assert!(!issues.is_empty());
+        assert!(issues[0].contains("Overlapping ID periods"));
+        assert!(issues[0].contains("5046"));
+        assert!(issues[0].contains("5037"));
+
+        // Test gap detection
+        let mut station_with_gap = Station::new(
+            12345,
+            "TEST STATION".to_string(),
+            51.0,
+            0.0,
+            None,
+            None,
+            None,
+            Utc.with_ymd_and_hms(1990, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2010, 12, 31, 23, 59, 59).unwrap(),
+            "Met Office".to_string(),
+            "Test County".to_string(),
+            10.0,
+        )
+        .unwrap();
+
+        station_with_gap.add_id_period(IdPeriod::new(
+            "1001".to_string(),
+            "DCNN".to_string(),
+            "TEST".to_string(),
+            1990,
+            1995,
+        ));
+        station_with_gap.add_id_period(IdPeriod::new(
+            "1002".to_string(),
+            "DCNN".to_string(),
+            "TEST".to_string(),
+            1998, // Gap: 1996-1997 missing
+            2005,
+        ));
+
+        let gap_issues = station_with_gap.analyze_id_evolution();
+        assert!(!gap_issues.is_empty());
+        assert!(gap_issues[0].contains("Gap in ID coverage"));
+        assert!(gap_issues[0].contains("1001 ends in 1995"));
+        assert!(gap_issues[0].contains("1002 starts in 1998"));
     }
 }
 
@@ -667,6 +1053,7 @@ mod tests {
             authority: "Met Office".to_string(),
             historic_county: "Greater London".to_string(),
             height_meters: 25.0,
+            id_history: Vec::new(),
         }
     }
 

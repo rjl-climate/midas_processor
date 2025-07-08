@@ -4,7 +4,7 @@
 //! - Capability files (station metadata in BADC header)
 //! - Centralized metadata files (station records in data section)
 
-use crate::app::models::Station;
+use crate::app::models::{IdPeriod, Station};
 use crate::constants::record_status;
 use crate::{Error, Result};
 use csv::StringRecord;
@@ -382,6 +382,79 @@ pub fn extract_capability_metadata(record: &StringRecord, metadata: &mut HashMap
             metadata.insert(key.to_string(), value);
         }
     }
+}
+
+/// Parse ID evolution record from capability file data section
+///
+/// Capability files contain observation ID evolution data in their data section
+/// with columns like: id,id_type,met_domain_name,first_year,last_year
+pub fn parse_id_evolution_record(
+    record: &StringRecord,
+    headers: &StringRecord,
+) -> Result<IdPeriod> {
+    // Create mapping from header names to column indices
+    let mut header_map = HashMap::new();
+    for (i, header) in headers.iter().enumerate() {
+        header_map.insert(header.trim().to_lowercase(), i);
+    }
+
+    // Extract required fields
+    let observation_id = get_field_by_name(record, &header_map, "id")?;
+    let id_type = get_field_by_name(record, &header_map, "id_type")?;
+    let met_domain_name = get_field_by_name(record, &header_map, "met_domain_name")?;
+
+    let first_year: i32 = get_field_by_name(record, &header_map, "first_year")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid first_year format".to_string()))?;
+
+    let last_year: i32 = get_field_by_name(record, &header_map, "last_year")?
+        .parse()
+        .map_err(|_| Error::data_validation("Invalid last_year format".to_string()))?;
+
+    // Validate year range
+    if first_year > last_year {
+        return Err(Error::data_validation(format!(
+            "Invalid year range: first_year ({}) > last_year ({})",
+            first_year, last_year
+        )));
+    }
+
+    // Create IdPeriod
+    let id_period = IdPeriod::new(
+        observation_id,
+        id_type,
+        met_domain_name,
+        first_year,
+        last_year,
+    );
+
+    Ok(id_period)
+}
+
+/// Helper function to get field value by name from record
+fn get_field_by_name(
+    record: &StringRecord,
+    header_map: &HashMap<String, usize>,
+    field_name: &str,
+) -> Result<String> {
+    let index = header_map
+        .get(&field_name.to_lowercase())
+        .ok_or_else(|| Error::data_validation(format!("Missing required field: {}", field_name)))?;
+
+    let value = record
+        .get(*index)
+        .ok_or_else(|| Error::data_validation(format!("Missing value for field: {}", field_name)))?
+        .trim()
+        .to_string();
+
+    if value.is_empty() {
+        return Err(Error::data_validation(format!(
+            "Empty value for required field: {}",
+            field_name
+        )));
+    }
+
+    Ok(value)
 }
 
 #[cfg(test)]
