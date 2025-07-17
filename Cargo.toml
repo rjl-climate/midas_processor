@@ -3,6 +3,15 @@ name = "midas_processor"
 version = "1.0.0"
 edition = "2024"
 default-run = "midas_processor"
+description = "High-performance Rust tool for converting UK Met Office MIDAS weather datasets from BADC-CSV to optimized Parquet format"
+license = "MIT"
+repository = "https://github.com/rjl-climate/midas_processor"
+homepage = "https://github.com/rjl-climate/midas_processor"
+documentation = "https://docs.rs/midas_processor"
+keywords = ["climate", "weather", "midas", "parquet", "meteorology"]
+categories = ["command-line-utilities", "science"]
+authors = ["Richard Lyon <richard@rjl.dev>"]
+readme = "README.md"
 
 [dependencies]
 polars = { version = "0.39", features = [
