@@ -1,102 +1,93 @@
+use anyhow::Result;
 use clap::Parser;
-use midas_processor::cli::{args::Args, commands};
-use std::process;
-use tokio_util::sync::CancellationToken;
+use colored::*;
+use midas_processor::cli::{Args, dataset_discovery};
+use midas_processor::config::{CompressionAlgorithm, MidasConfig, ParquetOptimizationConfig};
+use midas_processor::processor::DatasetProcessor;
+use std::path::PathBuf;
 
-fn main() {
-    // Parse command line arguments
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let args = Args::parse();
 
-    // If no subcommand was provided, show help and available commands
-    if args.command.is_none() {
-        show_help_and_commands();
-        process::exit(0);
-    }
-
-    // Create async runtime and run the main command logic with signal handling
-    let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
-        eprintln!("Failed to create async runtime: {}", e);
-        process::exit(1);
-    });
-
-    let result = runtime.block_on(async {
-        // Create cancellation token for coordinating graceful shutdown
-        let cancellation_token = CancellationToken::new();
-
-        // Set up graceful shutdown handling
-        let shutdown_signal = async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install CTRL+C signal handler");
-
-            // Cancel all operations when Ctrl+C is received
-            cancellation_token.cancel();
-        };
-
-        // Run the main command with cancellation support
-        tokio::select! {
-            result = commands::run(args, cancellation_token.clone()) => {
-                result
+    // Determine dataset path - either from args or discovery
+    let dataset_path = match args.dataset_path.clone() {
+        Some(path) => path,
+        None => {
+            // Find the cache directory and discover datasets
+            let cache_dir = dataset_discovery::find_cache_directory()?;
+            if args.verbose {
+                println!(
+                    "{} {}",
+                    "MIDAS cache directory:".bright_cyan(),
+                    cache_dir.display()
+                );
             }
-            _ = shutdown_signal => {
-                eprintln!("\nReceived CTRL+C, shutting down gracefully...");
-                Err(midas_processor::Error::processing_interrupted(
-                    "Processing interrupted by user".to_string()
-                ))
-            }
-        }
-    });
 
-    match result {
-        Ok(_stats) => {
-            // Success - stats have already been reported by the command
-            process::exit(0);
+            let datasets = dataset_discovery::discover_datasets(&cache_dir)?;
+            if datasets.is_empty() {
+                eprintln!("{}", "No MIDAS datasets found in cache.".bright_red());
+                eprintln!("Please run midas-fetcher first to download datasets.");
+                std::process::exit(1);
+            }
+
+            let selected = dataset_discovery::select_dataset(&datasets)?;
+            println!(
+                "{} {}",
+                "Selected:".bright_green(),
+                selected.name.bright_white().bold()
+            );
+            selected.path.clone()
         }
-        Err(error) => {
-            // Error occurred - print to stderr and exit with error code
-            eprintln!("Error: {:#}", error);
-            process::exit(1);
-        }
-    }
+    };
+
+    process_dataset(&args, dataset_path).await
 }
 
-/// Show help information and available commands when no subcommand is provided
-fn show_help_and_commands() {
-    println!("MIDAS Processor - UK Met Office Weather Data Converter");
-    println!("====================================================");
-    println!();
-    println!("Convert UK Met Office MIDAS weather observation data from CSV format");
-    println!("into optimized Apache Parquet files for fast Python data analysis.");
-    println!();
-    println!("USAGE:");
-    println!("    midas-processor <COMMAND> [OPTIONS]");
-    println!();
-    println!("COMMANDS:");
-    println!("    process     Process MIDAS data from CSV to Parquet format (main command)");
-    println!("    stations    Generate station registry reports and visualizations");
-    println!("    help        Show this help message or help for specific commands");
-    println!();
-    println!("OPTIONS:");
-    println!("    -h, --help       Show help information");
-    println!("    -V, --version    Show version information");
-    println!();
-    println!("EXAMPLES:");
-    println!("    # Process default datasets (temperature and rainfall):");
-    println!("    midas-processor process");
-    println!();
-    println!("    # Process specific datasets with custom paths:");
-    println!(
-        "    midas-processor process --input /path/to/midas/cache --output /path/to/output \\"
-    );
-    println!("                            --datasets uk-daily-temperature-obs,uk-daily-rain-obs");
-    println!();
-    println!("    # Generate station registry report:");
-    println!("    midas-processor stations --detailed --format json");
-    println!();
-    println!("    # Get help for specific commands:");
-    println!("    midas-processor process --help");
-    println!("    midas-processor stations --help");
-    println!();
-    println!("For detailed help on any command, use:");
-    println!("    midas-processor <COMMAND> --help");
+async fn process_dataset(args: &Args, dataset_path: PathBuf) -> Result<()> {
+    // Create configuration with defaults
+    let mut config = MidasConfig::default();
+
+    if args.discovery_only {
+        config = config.with_discovery_only();
+    }
+
+    // Configure parquet compression
+    let compression_algorithm = match args.compression.to_lowercase().as_str() {
+        "snappy" => CompressionAlgorithm::Snappy,
+        "zstd" => CompressionAlgorithm::Zstd,
+        "lz4" => CompressionAlgorithm::Lz4,
+        "none" | "uncompressed" => CompressionAlgorithm::Uncompressed,
+        _ => {
+            eprintln!(
+                "Warning: Unknown compression '{}', using snappy",
+                args.compression
+            );
+            CompressionAlgorithm::Snappy
+        }
+    };
+
+    let parquet_config = ParquetOptimizationConfig {
+        compression_algorithm,
+        ..Default::default()
+    };
+
+    let config = config.with_parquet_optimization(parquet_config);
+
+    let output_path = args.get_output_path(&dataset_path);
+    let mut processor = DatasetProcessor::new(dataset_path, Some(output_path))?.with_config(config);
+
+    match processor.process().await {
+        Ok(_stats) => {
+            // Success messages are printed by the processor
+        }
+        Err(e) => {
+            eprintln!("{} {:#}", "Error:".bright_red().bold(), e);
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
 }
