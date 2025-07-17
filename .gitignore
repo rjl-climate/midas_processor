@@ -215,3 +215,6 @@ tags
 # AI
 
 .claude/
+
+# Backup directory for code preservation
+backup_original/
