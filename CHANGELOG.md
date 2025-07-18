@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive README with usage examples and performance benchmarks
 - Contributing guidelines and development documentation
 - MIT license for open source distribution
+- **Adaptive Processing Strategy**: Large datasets (>3000 stations or rain >1000 stations) automatically use two-stage processing with temporary station files and atomic merging to prevent memory exhaustion
 
 ## [1.1.0] - 2024-01-18
 

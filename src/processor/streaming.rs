@@ -67,14 +67,14 @@ impl StreamingProcessor {
                     if let Some(station_id) = station_str.split('_').next() {
                         files_by_station
                             .entry(station_id.to_string())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(file.clone());
                     }
                 }
             }
         }
         
-        println!("  Processing {} stations individually...", files_by_station.len());
+        // Processing stations individually
         
         // Create progress bar
         let pb = ProgressBar::new(files_by_station.len() as u64);
@@ -120,7 +120,7 @@ impl StreamingProcessor {
         
         pb.finish_with_message("All stations processed");
         
-        println!("  Successfully processed {} stations", station_results.len());
+        // Stations processed successfully
         
         Ok(station_results)
     }
@@ -280,9 +280,7 @@ impl StreamingProcessor {
 
         pb.finish_with_message("All CSV files processed");
 
-        println!("  Processing complete: {} files processed, {} failed", total_processed, total_failed);
-        println!("  Total batches created: {}", all_batches.len());
-        println!("  Starting final consolidation and parquet writing...");
+        // Files processed successfully
 
         let stats = ProcessingStats {
             files_processed: total_processed,

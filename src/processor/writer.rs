@@ -36,8 +36,8 @@ impl ParquetWriter {
         }
     }
 
-    /// Write parquet files per station for large datasets
-    pub async fn write_per_station_parquet(
+    /// Write parquet files per station for large datasets and merge into final file
+    pub async fn write_per_station_parquet_and_merge(
         &self,
         station_frames: Vec<(String, Vec<LazyFrame>)>, // (station_id, frames for that station)
         dataset_type: &DatasetType,
@@ -46,14 +46,11 @@ impl ParquetWriter {
             return Ok(0);
         }
 
-        // Create output directory for station files
-        let station_dir = self.output_path.with_extension("");
-        std::fs::create_dir_all(&station_dir)?;
+        // Create temporary directory for station files
+        let temp_dir = tempfile::tempdir()?;
+        let station_dir = temp_dir.path();
         
-        println!("  Writing {} station parquet files to: {}", 
-            station_frames.len(), 
-            station_dir.display()
-        );
+        // Writing station parquet files
 
         // Create progress bar for station writing
         let pb = ProgressBar::new(station_frames.len() as u64);
@@ -65,7 +62,7 @@ impl ParquetWriter {
         );
         pb.set_message("Writing station files");
 
-        let total_rows = 0;
+        let _total_rows = 0;
         let mut successful_stations = 0;
 
         // Process each station
@@ -135,6 +132,11 @@ impl ParquetWriter {
         }
 
         pb.finish_with_message(format!("Successfully wrote {} station files", successful_stations));
+        
+        // Now merge the station files into the final parquet file
+        let total_rows = self.merge_station_parquet_files(station_dir, dataset_type).await?;
+        
+        // Temporary directory is automatically cleaned up when temp_dir goes out of scope
         Ok(total_rows)
     }
 
@@ -162,7 +164,7 @@ impl ParquetWriter {
         station_dir: &Path,
         dataset_type: &DatasetType,
     ) -> Result<usize> {
-        println!("  Merging station files into single parquet file...");
+        // Merging station files
         
         // Pattern to match all parquet files in the directory
         let pattern = format!("{}/*.parquet", station_dir.display());
@@ -284,8 +286,7 @@ impl ParquetWriter {
             frames.len()
         );
 
-        println!("  Consolidating {} data frames into parquet format...", frames.len());
-        println!("  Estimated stations: {}", station_count);
+        // Consolidating data frames
 
         // Always use streaming approach
         self.write_with_optimal_row_groups(frames, station_count, dataset_type)
@@ -324,7 +325,7 @@ impl ParquetWriter {
 
         // Hierarchical concatenation to avoid large union operations that cause issues
         let combined_frame = if batches.len() <= 10 {
-            println!("  Small batch count ({}), concatenating directly", batches.len());
+            // Small batch count - direct concatenation
             // Small number of batches - concatenate directly
             concat(
                 batches,
@@ -337,14 +338,11 @@ impl ParquetWriter {
                 },
             )?
         } else {
-            println!("  Large batch count ({}), using hierarchical concatenation", batches.len());
+            // Large batch count - hierarchical concatenation
             // Large number of batches - concatenate in chunks to avoid complex unions
             let mut chunk_frames = Vec::new();
-            let total_chunks = (batches.len() + 9) / 10; // Round up division
-            for (i, chunk) in batches.chunks(10).enumerate() {
-                if i % 100 == 0 {
-                    println!("    Processing chunk {}/{} ({} frames)", i + 1, total_chunks, chunk.len());
-                }
+            for chunk in batches.chunks(10) {
+                // Processing chunks
                 let chunk_frame = concat(
                     chunk,
                     UnionArgs {
@@ -358,8 +356,7 @@ impl ParquetWriter {
                 chunk_frames.push(chunk_frame);
             }
 
-            // Now concatenate the chunks
-            println!("    Concatenating {} chunk frames into final dataset", chunk_frames.len());
+            // Concatenating chunk frames
             concat(
                 chunk_frames,
                 UnionArgs {
@@ -375,12 +372,10 @@ impl ParquetWriter {
         // Conditionally sort based on station count to avoid memory issues
         let sort_threshold = 3000; // Conservative threshold based on successful cases
         let final_frame = if station_count > sort_threshold {
-            println!("  Skipping sort for {} stations (exceeds threshold of {})", station_count, sort_threshold);
-            println!("  Large datasets will be written unsorted to avoid memory issues");
+            // Skipping sort for large dataset
             combined_frame // No sorting for large datasets
         } else {
-            println!("  Sorting final dataset by station_id and {} ({} stations)", 
-                dataset_type.primary_time_column(), station_count);
+            // Sorting final dataset
             combined_frame.sort_by_exprs(
                 [col("station_id"), col(dataset_type.primary_time_column())],
                 SortMultipleOptions::default()
@@ -394,7 +389,7 @@ impl ParquetWriter {
             std::fs::create_dir_all(parent)?;
         }
 
-        println!("  Writing parquet file to: {}", self.output_path.display());
+        // Writing parquet file
 
         // Create spinner to show parquet creation progress
         let spinner = ProgressBar::new_spinner();
@@ -426,9 +421,6 @@ impl ParquetWriter {
         let result = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
             use polars::prelude::{SinkTarget, SinkOptions};
             
-            println!("  Starting sink_parquet operation...");
-            let start = std::time::Instant::now();
-            
             // Execute streaming parquet write - sink_parquet + collect streams to disk
             final_frame
                 .with_new_streaming(true)
@@ -439,8 +431,6 @@ impl ParquetWriter {
                     SinkOptions::default(),
                 )?
                 .collect()?;
-
-            println!("  Sink operation completed in {:?}", start.elapsed());
             
             // Return estimated row count (will be calculated differently in streaming mode)
             Ok(0) // Placeholder - actual count not available with sink_parquet

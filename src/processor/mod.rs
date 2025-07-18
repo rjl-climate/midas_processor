@@ -238,7 +238,6 @@ impl DatasetProcessor {
             (dataset_type == DatasetType::Rain && self.station_count > 1000);
 
         let stats = if use_per_station {
-            println!("  Using per-station parquet output (station count: {})", self.station_count);
             
             // Process files grouped by station
             let station_frames = self
@@ -248,44 +247,22 @@ impl DatasetProcessor {
             
             let files_processed = csv_files.len();
             
-            // Write per-station parquet files
-            if !station_frames.is_empty() {
-                let total_rows = self
-                    .parquet_writer
-                    .write_per_station_parquet(station_frames, &dataset_type)
-                    .await?;
-                
-                // Check if we should merge the station files into a single file
-                if self.config.parquet_optimization.merge_station_files {
-                    let station_dir = self.output_path.with_extension("");
-                    
-                    // Merge station files into single parquet file
-                    self.parquet_writer
-                        .merge_station_parquet_files(&station_dir, &dataset_type)
-                        .await?;
-                    
-                    // Optionally clean up individual station files
-                    if self.config.parquet_optimization.cleanup_station_files {
-                        println!("  Cleaning up individual station files...");
-                        std::fs::remove_dir_all(&station_dir)?;
-                    }
-                }
-                
-                ProcessingStats {
-                    files_processed,
-                    files_failed: 0,
-                    total_rows,
-                    output_path: self.output_path.clone(),
-                    processing_time_ms: 0, // Will be set below
-                }
+            // Write per-station parquet files and merge into final file
+            let total_rows = if !station_frames.is_empty() {
+                self.parquet_writer
+                    .write_per_station_parquet_and_merge(station_frames, &dataset_type)
+                    .await?
             } else {
-                ProcessingStats {
-                    files_processed,
-                    files_failed: 0,
-                    total_rows: 0,
-                    output_path: self.output_path.clone(),
-                    processing_time_ms: 0,
-                }
+                0
+            };
+                
+            
+            ProcessingStats {
+                files_processed,
+                files_failed: 0,
+                total_rows,
+                output_path: self.output_path.clone(),
+                processing_time_ms: 0, // Will be set below
             }
         } else {
             // Use original single-file approach

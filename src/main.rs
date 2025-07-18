@@ -110,7 +110,6 @@ async fn test_merge_functionality(station_dir: &PathBuf) -> Result<()> {
     use midas_processor::config::MidasConfig;
     use midas_processor::processor::writer::ParquetWriter;
     use midas_processor::DatasetType;
-    use std::path::Path;
     
     println!("{}", "Testing merge functionality...".bright_yellow());
     println!("Station directory: {}", station_dir.display());
@@ -126,7 +125,7 @@ async fn test_merge_functionality(station_dir: &PathBuf) -> Result<()> {
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             entry.path().extension()
-                .map_or(false, |ext| ext == "parquet")
+                .is_some_and(|ext| ext == "parquet")
         })
         .collect();
     
