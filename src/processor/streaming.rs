@@ -46,6 +46,85 @@ impl StreamingProcessor {
         self.schema_manager = schema_manager;
     }
 
+    /// Process files grouped by station for per-station parquet output
+    pub async fn process_files_by_station(
+        &self,
+        files: &[PathBuf],
+        dataset_type: &DatasetType,
+    ) -> Result<Vec<(String, Vec<LazyFrame>)>> {
+        use std::collections::HashMap;
+        
+        // Group files by station ID
+        let mut files_by_station: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        
+        for file in files {
+            // Extract station ID from file path
+            // Path structure: .../qcv-1/<county>/<station_id>_<station_name>/<file>.csv
+            if let Some(parent) = file.parent() {
+                if let Some(station_dir) = parent.file_name() {
+                    let station_str = station_dir.to_string_lossy();
+                    // Extract just the station ID (before the underscore)
+                    if let Some(station_id) = station_str.split('_').next() {
+                        files_by_station
+                            .entry(station_id.to_string())
+                            .or_insert_with(Vec::new)
+                            .push(file.clone());
+                    }
+                }
+            }
+        }
+        
+        println!("  Processing {} stations individually...", files_by_station.len());
+        
+        // Create progress bar
+        let pb = ProgressBar::new(files_by_station.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        pb.set_message("Processing stations");
+        
+        let mut station_results = Vec::new();
+        
+        // Process each station's files
+        for (station_id, station_files) in files_by_station {
+            pb.set_message(format!("Processing station {}", station_id));
+            
+            debug!("Processing station {} with {} files", station_id, station_files.len());
+            
+            // Process all files for this station
+            let mut station_frames = Vec::new();
+            
+            for file_path in &station_files {
+                match self.process_single_file_lazy(file_path, dataset_type).await {
+                    Ok(Some(frame)) => {
+                        station_frames.push(frame);
+                    }
+                    Ok(None) => {
+                        warn!("Skipped file (no data): {}", file_path.display());
+                    }
+                    Err(e) => {
+                        error!("Failed to process {}: {:#}", file_path.display(), e);
+                    }
+                }
+            }
+            
+            if !station_frames.is_empty() {
+                station_results.push((station_id, station_frames));
+            }
+            
+            pb.inc(1);
+        }
+        
+        pb.finish_with_message("All stations processed");
+        
+        println!("  Successfully processed {} stations", station_results.len());
+        
+        Ok(station_results)
+    }
+
     /// Check if system is under memory pressure
     pub async fn check_memory_pressure(&self) -> bool {
         let mut system = self.system_monitor.lock().await;
@@ -175,7 +254,18 @@ impl StreamingProcessor {
                 let batch_frame = if batch_frames.len() == 1 {
                     batch_frames.into_iter().next().unwrap()
                 } else {
-                    concat(batch_frames, UnionArgs::default())?
+                    // Use diagonal concatenation to handle varying schemas
+                    // This enables processing of files with different column structures
+                    concat(
+                        batch_frames,
+                        UnionArgs {
+                            parallel: true,      // Enable parallel concatenation for speed
+                            rechunk: true,       // Enable rechunking for memory efficiency
+                            to_supertypes: true, // Enable type coercion for schema union
+                            maintain_order: true,
+                            ..Default::default()
+                        },
+                    )?
                 };
 
                 // Note: Batch-level sorting removed for performance - final sorting happens in writer
@@ -189,6 +279,10 @@ impl StreamingProcessor {
         }
 
         pb.finish_with_message("All CSV files processed");
+
+        println!("  Processing complete: {} files processed, {} failed", total_processed, total_failed);
+        println!("  Total batches created: {}", all_batches.len());
+        println!("  Starting final consolidation and parquet writing...");
 
         let stats = ProcessingStats {
             files_processed: total_processed,
@@ -248,8 +342,8 @@ impl StreamingProcessor {
             .with_schema(Some(Arc::new(config.schema.clone())))
             .with_ignore_errors(true)
             .with_has_header(false)
-            .with_low_memory(true) // Enable low memory mode for better streaming
-            .with_rechunk(false) // Avoid unnecessary rechunking
+            .with_low_memory(false) // Disable low memory mode for better performance
+            .with_rechunk(true)     // Enable rechunking for memory optimization
             .with_infer_schema_length(Some(0)) // Skip schema inference since we provide it
             .finish()?;
 
@@ -264,16 +358,46 @@ impl StreamingProcessor {
             lit(metadata.height_units.clone()).alias("height_units"),
         ]);
 
-        // Step 5: Exclude empty columns if enabled
-        let final_frame = if self.config.enable_column_elimination {
-            let exclude_cols = self.schema_manager.get_excluded_columns(dataset_type)?;
-            if !exclude_cols.is_empty() {
-                enhanced_frame.select([col("*").exclude(exclude_cols)])
-            } else {
-                enhanced_frame
+        // Step 5: Ensure consistent column ordering for all LazyFrames
+        // This is critical for successful concatenation
+        let final_frame = {
+            // Get all column names from the original schema
+            let original_cols: Vec<String> = config
+                .schema
+                .iter_names()
+                .map(|name| name.to_string())
+                .collect();
+
+            // Metadata columns in consistent order
+            let metadata_cols = vec![
+                "station_id".to_string(),
+                "station_name".to_string(),
+                "county".to_string(),
+                "latitude".to_string(),
+                "longitude".to_string(),
+                "height".to_string(),
+                "height_units".to_string(),
+            ];
+
+            // Build the complete column list
+            let mut all_cols = original_cols;
+            all_cols.extend(metadata_cols);
+
+            // Apply column elimination if enabled
+            if self.config.enable_column_elimination {
+                let exclude_cols = self.schema_manager.get_excluded_columns(dataset_type)?;
+                if !exclude_cols.is_empty() {
+                    all_cols.retain(|col| !exclude_cols.contains(col));
+                }
             }
-        } else {
-            enhanced_frame
+
+            // Select columns in the exact order to ensure consistency
+            let column_exprs: Vec<_> = all_cols
+                .iter()
+                .map(|col_name| col(col_name.as_str()))
+                .collect();
+
+            enhanced_frame.select(column_exprs)
         };
 
         Ok(Some(final_frame))

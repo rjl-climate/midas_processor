@@ -51,6 +51,12 @@ pub struct ParquetOptimizationConfig {
 
     /// Maximum memory to use for accumulating batches (MB)
     pub max_accumulation_memory_mb: usize,
+
+    /// Merge station files into single parquet file after per-station processing
+    pub merge_station_files: bool,
+
+    /// Clean up individual station files after merging
+    pub cleanup_station_files: bool,
 }
 
 /// Row group sizing strategies
@@ -93,6 +99,8 @@ impl Default for ParquetOptimizationConfig {
             optimize_for_stations: true,
             min_row_group_size: 250_000, // 250K minimum row group size
             max_accumulation_memory_mb: 2048, // 2GB max memory for accumulation
+            merge_station_files: true, // Merge station files into single file
+            cleanup_station_files: false, // Keep individual station files
         }
     }
 }
@@ -281,6 +289,23 @@ pub struct MidasConfig {
     pub dataset_configs: HashMap<DatasetType, DatasetSpecificConfig>,
 }
 
+/// Strategy for concatenating files with different schemas
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum UnionStrategy {
+    /// Requires identical schemas (faster but fails on schema differences)
+    Standard,
+    /// Handles different schemas with diagonal concatenation (slower but more flexible)
+    Diagonal,
+    /// Choose based on schema analysis (optimal balance)
+    #[default]
+    Adaptive,
+}
+
+/// Default maximum schema variance (number of different columns allowed)
+fn default_max_schema_variance() -> usize {
+    3
+}
+
 /// Configuration specific to each dataset type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetSpecificConfig {
@@ -292,6 +317,14 @@ pub struct DatasetSpecificConfig {
 
     /// Schema validation settings
     pub schema_validation: SchemaValidation,
+
+    /// Strategy for concatenating files with different schemas
+    #[serde(default)]
+    pub union_strategy: UnionStrategy,
+
+    /// Maximum schema differences allowed before failing
+    #[serde(default = "default_max_schema_variance")]
+    pub max_schema_variance: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,6 +358,8 @@ impl Default for MidasConfig {
                     allow_column_variations: true,
                     max_column_diff: 2,
                 },
+                union_strategy: UnionStrategy::Diagonal, // Rain datasets need diagonal concat
+                max_schema_variance: 3,
             },
         );
 
@@ -346,6 +381,8 @@ impl Default for MidasConfig {
                     allow_column_variations: true,
                     max_column_diff: 3,
                 },
+                union_strategy: UnionStrategy::Adaptive, // Temperature datasets use adaptive
+                max_schema_variance: 3,
             },
         );
 
@@ -364,6 +401,8 @@ impl Default for MidasConfig {
                     allow_column_variations: true,
                     max_column_diff: 4,
                 },
+                union_strategy: UnionStrategy::Adaptive, // Wind datasets use adaptive
+                max_schema_variance: 4,
             },
         );
 
@@ -378,6 +417,8 @@ impl Default for MidasConfig {
                     allow_column_variations: true,
                     max_column_diff: 2,
                 },
+                union_strategy: UnionStrategy::Standard, // Radiation datasets have consistent schemas
+                max_schema_variance: 2,
             },
         );
 

@@ -20,7 +20,7 @@ historic_county_name,G,county1
 location,G,51.5,-0.1
 height,G,10,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,5.0,0
 2023-01-02,3.2,0
 end data"#;
@@ -37,7 +37,7 @@ historic_county_name,G,county1
 location,G,52.0,-0.2
 height,G,20,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,2.5,0
 2023-01-02,1.8,0
 2023-01-03,4.1,0
@@ -55,7 +55,7 @@ historic_county_name,G,county2
 location,G,53.0,-0.3
 height,G,30,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
 2023-01-02,0.5,0
 2023-01-03,2.3,0
@@ -150,7 +150,7 @@ historic_county_name,G,county{}
 location,G,{}.{},-0.{}
 height,G,{}0,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 {}-01-01,{}.0,0
 {}-01-02,{}.5,0
 {}-01-03,{}.2,0
@@ -220,7 +220,7 @@ historic_county_name,G,county1
 location,G,51.5,-0.1
 height,G,10,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
 end data"#;
 
@@ -236,7 +236,7 @@ historic_county_name,G,county1
 location,G,51.6,-0.2
 height,G,20,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 "#
     .to_string();
 

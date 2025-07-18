@@ -27,6 +27,10 @@ pub struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Test merge functionality on existing station parquet files
+    #[arg(long)]
+    pub test_merge: Option<PathBuf>,
 }
 
 impl Args {
@@ -83,6 +87,9 @@ pub mod dataset_discovery {
 
     /// Discover available datasets in the cache directory
     pub fn discover_datasets(cache_dir: &std::path::Path) -> Result<Vec<DiscoveredDataset>> {
+        print!("{}", "Discovering available datasets: ".bright_yellow());
+        io::stdout().flush().context("Failed to flush stdout")?;
+        
         let mut datasets = Vec::new();
 
         for entry in std::fs::read_dir(cache_dir).context("Failed to read cache directory")? {
@@ -109,6 +116,8 @@ pub mod dataset_discovery {
                 // Check if this looks like a MIDAS dataset (has qcv-1 directory)
                 if path.join("qcv-1").exists() {
                     let size_estimate = estimate_dataset_size(&path)?;
+                    print!("{}", "✓".bright_green());
+                    io::stdout().flush().context("Failed to flush stdout")?;
 
                     datasets.push(DiscoveredDataset {
                         name,
@@ -121,6 +130,8 @@ pub mod dataset_discovery {
 
         // Sort by name for consistent ordering
         datasets.sort_by(|a, b| a.name.cmp(&b.name));
+        
+        println!(" {} {} datasets", "Found".bright_green(), datasets.len());
 
         Ok(datasets)
     }
@@ -170,7 +181,6 @@ pub mod dataset_discovery {
             );
         }
 
-        println!("{}", "Available MIDAS datasets:".bright_green().bold());
         println!();
 
         for (i, dataset) in datasets.iter().enumerate() {

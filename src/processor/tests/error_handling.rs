@@ -99,7 +99,7 @@ met_domain_name,MIDAS
 history,Data from test station
 // Missing data_end marker
 
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,5.0,0
 2023-01-02,3.2,0
 "#;
@@ -179,7 +179,7 @@ met_domain_name,MIDAS
 history,Valid station data
 data_end
 
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
 2023-01-02,2.0,0
 "#;
@@ -240,7 +240,7 @@ met_domain_name,MIDAS
 history,Test station data
 data_end
 
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
 "#;
 

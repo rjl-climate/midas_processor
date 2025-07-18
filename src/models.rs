@@ -47,7 +47,7 @@ impl DatasetType {
     /// This is the column used for temporal sorting and indexing
     pub fn primary_time_column(&self) -> &'static str {
         match self {
-            DatasetType::Rain => "ob_end_time",
+            DatasetType::Rain => "ob_end_ctime",
             DatasetType::Temperature => "ob_end_time",
             DatasetType::Wind => "ob_end_time",
             DatasetType::Radiation => "ob_end_time", // To be verified

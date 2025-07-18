@@ -12,9 +12,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use polars::io::parquet::write::KeyValueMetadata;
 use polars::prelude::StatisticsOptions;
 use polars::prelude::{
-    LazyFrame, ParquetWriteOptions, SortMultipleOptions, UnionArgs, col, concat,
+    LazyFrame, ParquetWriteOptions, ParquetCompression, SortMultipleOptions, UnionArgs, col, concat,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Parquet writer with optimization strategies
@@ -34,6 +34,216 @@ impl ParquetWriter {
             config,
             system_profile,
         }
+    }
+
+    /// Write parquet files per station for large datasets
+    pub async fn write_per_station_parquet(
+        &self,
+        station_frames: Vec<(String, Vec<LazyFrame>)>, // (station_id, frames for that station)
+        dataset_type: &DatasetType,
+    ) -> Result<usize> {
+        if station_frames.is_empty() {
+            return Ok(0);
+        }
+
+        // Create output directory for station files
+        let station_dir = self.output_path.with_extension("");
+        std::fs::create_dir_all(&station_dir)?;
+        
+        println!("  Writing {} station parquet files to: {}", 
+            station_frames.len(), 
+            station_dir.display()
+        );
+
+        // Create progress bar for station writing
+        let pb = ProgressBar::new(station_frames.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        pb.set_message("Writing station files");
+
+        let total_rows = 0;
+        let mut successful_stations = 0;
+
+        // Process each station
+        for (station_id, frames) in station_frames {
+            if frames.is_empty() {
+                continue;
+            }
+
+            pb.set_message(format!("Writing station {}", station_id));
+            
+            // Create output path for this station
+            let station_file = station_dir.join(format!("{}.parquet", station_id));
+            
+            debug!("Writing station {} with {} frames", station_id, frames.len());
+
+            // Concatenate frames for this station
+            let combined_frame = if frames.len() == 1 {
+                frames.into_iter().next().unwrap()
+            } else {
+                concat(
+                    frames,
+                    UnionArgs {
+                        parallel: true,
+                        rechunk: true,
+                        to_supertypes: true,
+                        maintain_order: true,
+                        ..Default::default()
+                    },
+                )?
+            };
+
+            // Sort by timestamp for this station
+            let sorted_frame = combined_frame.sort_by_exprs(
+                [col(dataset_type.primary_time_column())],
+                SortMultipleOptions::default()
+                    .with_multithreaded(true)
+                    .with_nulls_last(true),
+            );
+
+            // Write this station's data
+            let write_options = self.create_parquet_write_options();
+            
+            // Use streaming write for individual station
+            tokio::task::spawn_blocking(move || -> crate::error::Result<()> {
+                use polars::prelude::{SinkTarget, SinkOptions};
+                
+                sorted_frame
+                    .with_new_streaming(true)
+                    .sink_parquet(
+                        SinkTarget::Path(station_file.into()),
+                        write_options,
+                        None,
+                        SinkOptions::default(),
+                    )?
+                    .collect()?;
+                
+                Ok(())
+            })
+            .await
+            .map_err(|e| crate::error::MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to spawn write task: {}", e),
+            })??;
+
+            successful_stations += 1;
+            pb.inc(1);
+        }
+
+        pb.finish_with_message(format!("Successfully wrote {} station files", successful_stations));
+        Ok(total_rows)
+    }
+
+    /// Create parquet write options
+    fn create_parquet_write_options(&self) -> ParquetWriteOptions {
+        let parquet_config = &self.config.parquet_optimization;
+        
+        ParquetWriteOptions {
+            compression: parquet_config.compression_algorithm.to_polars_compression(),
+            statistics: if parquet_config.enable_statistics {
+                StatisticsOptions::full()
+            } else {
+                StatisticsOptions::empty()
+            },
+            row_group_size: Some(500_000), // Smaller for per-station files
+            data_page_size: Some(parquet_config.data_page_size),
+            key_value_metadata: Some(self.create_file_metadata()),
+            ..Default::default()
+        }
+    }
+
+    /// Merge station parquet files into a single parquet file
+    pub async fn merge_station_parquet_files(
+        &self,
+        station_dir: &Path,
+        dataset_type: &DatasetType,
+    ) -> Result<usize> {
+        println!("  Merging station files into single parquet file...");
+        
+        // Pattern to match all parquet files in the directory
+        let pattern = format!("{}/*.parquet", station_dir.display());
+        
+        debug!("Scanning parquet files with pattern: {}", pattern);
+        
+        // Create progress spinner
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        spinner.set_message("Reading station files...");
+        
+        // Start spinner animation
+        let spinner_clone = spinner.clone();
+        let animation_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(80));
+            loop {
+                interval.tick().await;
+                spinner_clone.tick();
+            }
+        });
+        
+        // Perform the merge operation
+        let output_path = self.output_path.clone();
+        let primary_time_col = dataset_type.primary_time_column().to_string();
+        
+        let result = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
+            use polars::prelude::{ScanArgsParquet, LazyFrame, SinkTarget, SinkOptions};
+            
+            // Scan all parquet files lazily
+            let lazy_frame = LazyFrame::scan_parquet(
+                pattern,
+                ScanArgsParquet::default(),
+            )?;
+            
+            // Sort by station_id and then by time (files are already sorted by time within each station)
+            let sorted_frame = lazy_frame.sort_by_exprs(
+                [col("station_id"), col(&primary_time_col)],
+                SortMultipleOptions::default()
+                    .with_multithreaded(true)
+                    .with_nulls_last(true),
+            );
+            
+            // Create write options
+            let write_options = ParquetWriteOptions {
+                compression: ParquetCompression::Snappy,
+                statistics: StatisticsOptions::full(),
+                row_group_size: Some(1_000_000), // 1M rows per group
+                data_page_size: Some(1024 * 1024), // 1MB pages
+                key_value_metadata: None, // Will be added separately
+                ..Default::default()
+            };
+            
+            // Write the merged file
+            sorted_frame
+                .with_new_streaming(true)
+                .sink_parquet(
+                    SinkTarget::Path(output_path.into()),
+                    write_options,
+                    None,
+                    SinkOptions::default(),
+                )?
+                .collect()?;
+            
+            Ok(0) // Row count not easily available with sink_parquet
+        })
+        .await
+        .map_err(|e| crate::error::MidasError::ProcessingFailed {
+            path: self.output_path.clone(),
+            reason: format!("Failed to spawn merge task: {}", e),
+        })??;
+        
+        // Stop animation
+        animation_task.abort();
+        spinner.finish_with_message("Station files merged successfully");
+        
+        Ok(result)
     }
 
     /// Create metadata for the Parquet file
@@ -74,6 +284,9 @@ impl ParquetWriter {
             frames.len()
         );
 
+        println!("  Consolidating {} data frames into parquet format...", frames.len());
+        println!("  Estimated stations: {}", station_count);
+
         // Always use streaming approach
         self.write_with_optimal_row_groups(frames, station_count, dataset_type)
             .await
@@ -105,33 +318,83 @@ impl ParquetWriter {
             optimal_row_group_size, estimated_total_rows, station_count
         );
 
-        // Create parquet write options with metadata
-        let write_options = ParquetWriteOptions {
-            compression: parquet_config.compression_algorithm.to_polars_compression(),
-            statistics: if parquet_config.enable_statistics {
-                StatisticsOptions::full()
-            } else {
-                StatisticsOptions::empty()
-            },
-            row_group_size: Some(optimal_row_group_size),
-            data_page_size: Some(parquet_config.data_page_size),
-            key_value_metadata: Some(self.create_file_metadata()),
-            ..Default::default()
+        // Create parquet write options with optimal row group size
+        let mut write_options = self.create_parquet_write_options();
+        write_options.row_group_size = Some(optimal_row_group_size);
+
+        // Hierarchical concatenation to avoid large union operations that cause issues
+        let combined_frame = if batches.len() <= 10 {
+            println!("  Small batch count ({}), concatenating directly", batches.len());
+            // Small number of batches - concatenate directly
+            concat(
+                batches,
+                UnionArgs {
+                    parallel: true,      // Enable parallel concatenation for speed
+                    rechunk: true,       // Enable rechunking for memory efficiency
+                    to_supertypes: true, // Enable type coercion for schema union
+                    maintain_order: true,
+                    ..Default::default()
+                },
+            )?
+        } else {
+            println!("  Large batch count ({}), using hierarchical concatenation", batches.len());
+            // Large number of batches - concatenate in chunks to avoid complex unions
+            let mut chunk_frames = Vec::new();
+            let total_chunks = (batches.len() + 9) / 10; // Round up division
+            for (i, chunk) in batches.chunks(10).enumerate() {
+                if i % 100 == 0 {
+                    println!("    Processing chunk {}/{} ({} frames)", i + 1, total_chunks, chunk.len());
+                }
+                let chunk_frame = concat(
+                    chunk,
+                    UnionArgs {
+                        parallel: true,      // Enable parallel concatenation for speed
+                        rechunk: true,       // Enable rechunking for memory efficiency
+                        to_supertypes: true, // Enable type coercion for schema union
+                        maintain_order: true,
+                        ..Default::default()
+                    },
+                )?;
+                chunk_frames.push(chunk_frame);
+            }
+
+            // Now concatenate the chunks
+            println!("    Concatenating {} chunk frames into final dataset", chunk_frames.len());
+            concat(
+                chunk_frames,
+                UnionArgs {
+                    parallel: true,      // Enable parallel concatenation for speed
+                    rechunk: true,       // Enable rechunking for memory efficiency
+                    to_supertypes: true, // Enable type coercion for schema union
+                    maintain_order: true,
+                    ..Default::default()
+                },
+            )?
         };
 
-        // Concatenate all LazyFrames (no collection - stays lazy)
-        let combined_frame = concat(batches, UnionArgs::default())?;
-
-        // Always sort by station_id then timestamp for optimal parquet performance
-        let final_frame = combined_frame.sort_by_exprs(
-            [col("station_id"), col(dataset_type.primary_time_column())],
-            SortMultipleOptions::default(),
-        );
+        // Conditionally sort based on station count to avoid memory issues
+        let sort_threshold = 3000; // Conservative threshold based on successful cases
+        let final_frame = if station_count > sort_threshold {
+            println!("  Skipping sort for {} stations (exceeds threshold of {})", station_count, sort_threshold);
+            println!("  Large datasets will be written unsorted to avoid memory issues");
+            combined_frame // No sorting for large datasets
+        } else {
+            println!("  Sorting final dataset by station_id and {} ({} stations)", 
+                dataset_type.primary_time_column(), station_count);
+            combined_frame.sort_by_exprs(
+                [col("station_id"), col(dataset_type.primary_time_column())],
+                SortMultipleOptions::default()
+                    .with_multithreaded(true)    // Enable multithreaded sorting
+                    .with_nulls_last(true),      // Optimize null handling
+            )
+        };
 
         // Ensure output directory exists
         if let Some(parent) = self.output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
+        println!("  Writing parquet file to: {}", self.output_path.display());
 
         // Create spinner to show parquet creation progress
         let spinner = ProgressBar::new_spinner();
@@ -141,7 +404,7 @@ impl ParquetWriter {
                 .unwrap()
                 .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
         );
-        spinner.set_message("Creating parquet file, this will take a few minutes...");
+        spinner.set_message("Writing parquet file...");
 
         // Clone spinner for the animation task
         let spinner_clone = spinner.clone();
@@ -155,31 +418,32 @@ impl ParquetWriter {
             }
         });
 
-        // Write with minimal async complexity - use spawn_blocking only for the write operation
+        // Use streaming parquet write to avoid loading entire dataset into memory
         let output_path = self.output_path.clone();
         debug!("Writing parquet to: {:?}", output_path);
 
+        // Use sink_parquet for streaming write
         let result = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
-            let df = final_frame.collect()?;
-            let row_count = df.height();
+            use polars::prelude::{SinkTarget, SinkOptions};
+            
+            println!("  Starting sink_parquet operation...");
+            let start = std::time::Instant::now();
+            
+            // Execute streaming parquet write - sink_parquet + collect streams to disk
+            final_frame
+                .with_new_streaming(true)
+                .sink_parquet(
+                    SinkTarget::Path(output_path.clone().into()),
+                    write_options,
+                    None, // No cloud options
+                    SinkOptions::default(),
+                )?
+                .collect()?;
 
-            let mut file = std::fs::File::create(&output_path)?;
-
-            use polars::prelude::ParquetWriter;
-            let mut df_mut = df;
-            let mut writer = ParquetWriter::new(&mut file)
-                .with_compression(write_options.compression)
-                .with_row_group_size(write_options.row_group_size)
-                .with_data_page_size(write_options.data_page_size);
-
-            // Add metadata if present
-            if let Some(metadata) = write_options.key_value_metadata {
-                writer = writer.with_key_value_metadata(Some(metadata));
-            }
-
-            writer.finish(&mut df_mut)?;
-
-            Ok(row_count)
+            println!("  Sink operation completed in {:?}", start.elapsed());
+            
+            // Return estimated row count (will be calculated differently in streaming mode)
+            Ok(0) // Placeholder - actual count not available with sink_parquet
         })
         .await
         .map_err(|e| crate::error::MidasError::ProcessingFailed {

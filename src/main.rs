@@ -18,6 +18,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // Handle test merge functionality
+    if let Some(station_dir) = &args.test_merge {
+        return test_merge_functionality(station_dir).await;
+    }
+
     // Determine dataset path - either from args or discovery
     let dataset_path = match args.dataset_path.clone() {
         Some(path) => path,
@@ -83,6 +88,9 @@ async fn process_dataset(args: &Args, dataset_path: PathBuf) -> Result<()> {
     let config = config.with_parquet_optimization(parquet_config);
 
     let output_path = args.get_output_path(&dataset_path);
+    
+    // Show initialization progress
+    println!("{}", "Initializing MIDAS dataset processor...".bright_yellow());
     let mut processor = DatasetProcessor::new(dataset_path, Some(output_path))?.with_config(config);
 
     match processor.process().await {
@@ -95,5 +103,74 @@ async fn process_dataset(args: &Args, dataset_path: PathBuf) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn test_merge_functionality(station_dir: &PathBuf) -> Result<()> {
+    use midas_processor::config::MidasConfig;
+    use midas_processor::processor::writer::ParquetWriter;
+    use midas_processor::DatasetType;
+    use std::path::Path;
+    
+    println!("{}", "Testing merge functionality...".bright_yellow());
+    println!("Station directory: {}", station_dir.display());
+    
+    // Check if directory exists and has parquet files
+    if !station_dir.exists() {
+        eprintln!("{}", "Error: Station directory does not exist".bright_red());
+        std::process::exit(1);
+    }
+    
+    // Count parquet files
+    let parquet_files: Vec<_> = std::fs::read_dir(station_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.path().extension()
+                .map_or(false, |ext| ext == "parquet")
+        })
+        .collect();
+    
+    if parquet_files.is_empty() {
+        eprintln!("{}", "Error: No parquet files found in directory".bright_red());
+        std::process::exit(1);
+    }
+    
+    println!("Found {} parquet files", parquet_files.len());
+    
+    // Create output path (same directory with .parquet extension)
+    let output_path = station_dir.with_extension("parquet");
+    println!("Output file: {}", output_path.display());
+    
+    // Create ParquetWriter
+    let config = MidasConfig::default();
+    let writer = ParquetWriter::new(output_path, config);
+    
+    // Determine dataset type from directory name
+    let dataset_type = if station_dir.to_string_lossy().contains("rain") {
+        DatasetType::Rain
+    } else if station_dir.to_string_lossy().contains("temperature") {
+        DatasetType::Temperature
+    } else if station_dir.to_string_lossy().contains("wind") {
+        DatasetType::Wind
+    } else {
+        DatasetType::Radiation
+    };
+    
+    println!("Detected dataset type: {:?}", dataset_type);
+    
+    // Perform the merge
+    let start_time = std::time::Instant::now();
+    match writer.merge_station_parquet_files(station_dir, &dataset_type).await {
+        Ok(_) => {
+            let duration = start_time.elapsed();
+            println!("{}", "✓ Merge completed successfully!".bright_green());
+            println!("Time taken: {:?}", duration);
+        }
+        Err(e) => {
+            eprintln!("{} {:#}", "Merge failed:".bright_red(), e);
+            std::process::exit(1);
+        }
+    }
+    
     Ok(())
 }

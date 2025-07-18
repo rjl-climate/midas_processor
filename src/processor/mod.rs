@@ -12,11 +12,12 @@ pub mod writer;
 pub mod tests;
 
 use self::{discovery::FileDiscovery, streaming::StreamingProcessor, writer::ParquetWriter};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::MidasConfig;
 use crate::error::{MidasError, Result};
 use crate::header::parse_badc_header;
-use crate::models::ProcessingStats;
+use crate::models::{DatasetType, ProcessingStats};
 use crate::schema::SchemaManager;
 
 use colored::*;
@@ -109,13 +110,26 @@ impl DatasetProcessor {
 
         // Step 1: Discover CSV files
         println!("\n{}", "Discovering CSV files...".bright_yellow());
+        
+        // Create spinner for discovery phase
+        let discovery_spinner = ProgressBar::new_spinner();
+        discovery_spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        discovery_spinner.set_message("Scanning directories for CSV files...");
+        discovery_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        
         let csv_files = self.file_discovery.discover_csv_files().await?;
         self.station_count = self.file_discovery.station_count();
+        
+        discovery_spinner.finish_with_message("CSV file discovery complete");
         println!(
-            "  {} {} CSV files from {} stations",
-            "Found".bright_green(),
-            csv_files.len().to_string().bright_white().bold(),
-            self.station_count.to_string().bright_white().bold()
+            "  Found {} CSV files from {} stations",
+            csv_files.len(),
+            self.station_count
         );
 
         if csv_files.is_empty() {
@@ -219,19 +233,78 @@ impl DatasetProcessor {
         self.streaming_processor
             .update_schema_manager(self.schema_manager.clone());
 
-        let (batches, mut stats) = self
-            .streaming_processor
-            .process_files_streaming(&csv_files, &dataset_type, &self.output_path)
-            .await?;
+        // Decide whether to use per-station or single-file approach
+        let use_per_station = self.station_count > 3000 || 
+            (dataset_type == DatasetType::Rain && self.station_count > 1000);
 
-        // Step 6: Write final parquet file
-        if !batches.is_empty() {
-            let total_rows = self
-                .parquet_writer
-                .write_final_parquet(batches, self.station_count, &dataset_type)
+        let stats = if use_per_station {
+            println!("  Using per-station parquet output (station count: {})", self.station_count);
+            
+            // Process files grouped by station
+            let station_frames = self
+                .streaming_processor
+                .process_files_by_station(&csv_files, &dataset_type)
                 .await?;
-            stats.total_rows = total_rows;
-        }
+            
+            let files_processed = csv_files.len();
+            
+            // Write per-station parquet files
+            if !station_frames.is_empty() {
+                let total_rows = self
+                    .parquet_writer
+                    .write_per_station_parquet(station_frames, &dataset_type)
+                    .await?;
+                
+                // Check if we should merge the station files into a single file
+                if self.config.parquet_optimization.merge_station_files {
+                    let station_dir = self.output_path.with_extension("");
+                    
+                    // Merge station files into single parquet file
+                    self.parquet_writer
+                        .merge_station_parquet_files(&station_dir, &dataset_type)
+                        .await?;
+                    
+                    // Optionally clean up individual station files
+                    if self.config.parquet_optimization.cleanup_station_files {
+                        println!("  Cleaning up individual station files...");
+                        std::fs::remove_dir_all(&station_dir)?;
+                    }
+                }
+                
+                ProcessingStats {
+                    files_processed,
+                    files_failed: 0,
+                    total_rows,
+                    output_path: self.output_path.clone(),
+                    processing_time_ms: 0, // Will be set below
+                }
+            } else {
+                ProcessingStats {
+                    files_processed,
+                    files_failed: 0,
+                    total_rows: 0,
+                    output_path: self.output_path.clone(),
+                    processing_time_ms: 0,
+                }
+            }
+        } else {
+            // Use original single-file approach
+            let (batches, mut stats) = self
+                .streaming_processor
+                .process_files_streaming(&csv_files, &dataset_type, &self.output_path)
+                .await?;
+
+            // Write final parquet file
+            if !batches.is_empty() {
+                let total_rows = self
+                    .parquet_writer
+                    .write_final_parquet(batches, self.station_count, &dataset_type)
+                    .await?;
+                stats.total_rows = total_rows;
+            }
+            
+            stats
+        };
 
         let total_time = start_time.elapsed().as_millis();
         println!("\n{}", "Processing Summary".bright_green().bold());

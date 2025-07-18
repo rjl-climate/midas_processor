@@ -20,7 +20,7 @@ historic_county_name,G,testshire
 location,G,51.5,-0.1
 height,G,10,m
 data
-ob_end_time,prcp_amt,prcp_amt_q
+ob_end_ctime,prcp_amt,prcp_amt_q
 2023-01-01,5.0,0
 2023-01-02,3.2,0
 2023-01-03,0.0,0

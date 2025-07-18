@@ -132,7 +132,7 @@ impl SchemaManager {
     fn infer_column_type(&self, column_name: &str) -> DataType {
         match column_name {
             // Primary datetime columns - parse as datetime with timezone
-            "ob_end_time" | "ob_date" => DataType::Datetime(TimeUnit::Nanoseconds, None),
+            "ob_end_time" | "ob_date" | "ob_end_ctime" => DataType::Datetime(TimeUnit::Nanoseconds, None),
 
             // Timestamp columns that may contain actual timestamps or be empty
             name if name.contains("stmp_time") || name.contains("ctime") => DataType::String,

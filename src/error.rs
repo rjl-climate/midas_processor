@@ -40,6 +40,19 @@ pub enum MidasError {
 
     #[error("Configuration error: {message}")]
     Configuration { message: String },
+
+    #[error("Schema union failed: {reason}. Files: {file_count}, Schemas: {schema_diff}")]
+    SchemaUnionFailed {
+        reason: String,
+        file_count: usize,
+        schema_diff: String,
+    },
+
+    #[error("Incompatible schemas in dataset {dataset_type}: {details}")]
+    IncompatibleSchemas {
+        dataset_type: String,
+        details: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, MidasError>;
