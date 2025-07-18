@@ -399,6 +399,73 @@ class MidasParquetValidator:
         try:
             pq_file = pq.ParquetFile(self.parquet_path)
             
+            # Check custom file metadata
+            file_metadata = pq_file.metadata.metadata
+            if file_metadata:
+                # Decode metadata dictionary
+                metadata_dict = {k.decode('utf-8'): v.decode('utf-8') for k, v in file_metadata.items()}
+                
+                # Check required metadata fields
+                required_fields = ["created_by", "created_at", "repository"]
+                missing_fields = [field for field in required_fields if field not in metadata_dict]
+                
+                if missing_fields:
+                    self.results.append(ValidationResult(
+                        "Custom Metadata", False,
+                        f"Missing metadata fields: {missing_fields}"
+                    ))
+                else:
+                    # Validate metadata values
+                    created_by = metadata_dict.get("created_by", "")
+                    created_at = metadata_dict.get("created_at", "")
+                    repository = metadata_dict.get("repository", "")
+                    
+                    # Check created_by format (should contain app name and version)
+                    if "midas_processor" in created_by and "v" in created_by:
+                        created_by_valid = True
+                    else:
+                        created_by_valid = False
+                    
+                    # Check created_at format (should be ISO 8601)
+                    try:
+                        from datetime import datetime
+                        datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        created_at_valid = True
+                    except ValueError:
+                        created_at_valid = False
+                    
+                    # Check repository URL
+                    repository_valid = repository == "https://github.com/rjl-climate/midas_processor"
+                    
+                    if created_by_valid and created_at_valid and repository_valid:
+                        self.results.append(ValidationResult(
+                            "Custom Metadata", True,
+                            f"Valid metadata: {created_by}, created {created_at}",
+                            details={
+                                "created_by": created_by,
+                                "created_at": created_at,
+                                "repository": repository
+                            }
+                        ))
+                    else:
+                        errors = []
+                        if not created_by_valid:
+                            errors.append("invalid created_by format")
+                        if not created_at_valid:
+                            errors.append("invalid created_at format")
+                        if not repository_valid:
+                            errors.append("invalid repository URL")
+                        
+                        self.results.append(ValidationResult(
+                            "Custom Metadata", False,
+                            f"Metadata validation errors: {', '.join(errors)}"
+                        ))
+            else:
+                self.results.append(ValidationResult(
+                    "Custom Metadata", False,
+                    "No custom metadata found in parquet file"
+                ))
+            
             # Check row groups
             num_row_groups = pq_file.num_row_groups
             total_rows = pq_file.metadata.num_rows

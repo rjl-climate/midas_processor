@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines and development documentation
 - MIT license for open source distribution
 
+## [1.1.0] - 2024-01-18
+
+### Added
+- **Parquet Metadata**: Files now include creation timestamp, application version, and repository URL
+- **Enhanced Validation**: Python validation script verifies custom metadata integrity
+
+### Changed
+- **Simplified Architecture**: Removed fallback writer methods, streaming-only approach
+- **Updated Dependencies**: Migrated to Polars 0.49 with improved parquet handling
+
 ## [0.2.0] - 2024-01-XX
 
 ### Added

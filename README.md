@@ -200,18 +200,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
-### v1.0.0 (Latest)
-- **Major refactoring**: Simplified architecture with streamlined module structure
-- **Simplified CLI**: Single command replaces complex subcommand structure
-- **Auto-discovery**: Interactive dataset selection from cache
-- **Performance**: Phase 3 parquet optimizations (500K row groups, sorting, compression)
-- **Memory efficiency**: Streaming execution with memory pressure detection
-
-### v0.1.0 (Initial)
-- **Core functionality**: BADC-CSV to Parquet conversion
-- **Schema detection**: Automatic detection of MIDAS dataset types
-- **Concurrent processing**: Multi-threaded file processing
-- **Progress reporting**: Real-time conversion progress
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history and release notes.
 
 ## Contributing
 

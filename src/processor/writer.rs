@@ -6,15 +6,15 @@
 use crate::config::{MidasConfig, SystemProfile};
 use crate::error::{MidasError, Result};
 
+use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
-use polars::prelude::{
-    col, concat, len, DataFrame, LazyFrame, ParquetWriteOptions, 
-    ParquetWriter as PolarsParquetWriter, SortMultipleOptions, UnionArgs,
-    SinkTarget,
-};
+use polars::io::parquet::write::KeyValueMetadata;
 use polars::prelude::StatisticsOptions;
+use polars::prelude::{
+    LazyFrame, ParquetWriteOptions, SinkTarget, SortMultipleOptions, UnionArgs, col, concat, len,
+};
 use std::path::PathBuf;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Parquet writer with optimization strategies
 #[derive(Debug)]
@@ -35,6 +35,28 @@ impl ParquetWriter {
         }
     }
 
+    /// Create metadata for the Parquet file
+    fn create_file_metadata(&self) -> KeyValueMetadata {
+        let mut metadata = Vec::new();
+
+        // Application name and version
+        metadata.push((
+            "created_by".to_string(),
+            format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        ));
+
+        // Creation timestamp
+        metadata.push(("created_at".to_string(), Utc::now().to_rfc3339()));
+
+        // GitHub repository
+        metadata.push((
+            "repository".to_string(),
+            env!("CARGO_PKG_REPOSITORY").to_string(),
+        ));
+
+        KeyValueMetadata::from_static(metadata)
+    }
+
     /// Write final parquet file with optimized structure for timeseries queries
     pub async fn write_final_parquet(
         &self,
@@ -51,35 +73,8 @@ impl ParquetWriter {
         );
 
         // Always use streaming approach
-        self.write_with_optimal_row_groups(frames, station_count).await
-    }
-
-    /// Write DataFrame to parquet with optimized settings
-    fn write_dataframe_optimized(
-        &self,
-        mut df: DataFrame,
-        write_options: &ParquetWriteOptions,
-    ) -> Result<()> {
-        let file = std::fs::File::create(&self.output_path)?;
-        let writer = PolarsParquetWriter::new(file)
-            .with_compression(write_options.compression)
-            .with_statistics(write_options.statistics);
-
-        // Apply row group size if specified
-        let writer = if let Some(row_group_size) = write_options.row_group_size {
-            writer.with_row_group_size(Some(row_group_size))
-        } else {
-            writer
-        };
-
-        writer
-            .finish(&mut df)
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to write optimized parquet: {}", e),
-            })?;
-
-        Ok(())
+        self.write_with_optimal_row_groups(frames, station_count)
+            .await
     }
 
     /// Write batches using true Polars streaming
@@ -107,12 +102,17 @@ impl ParquetWriter {
             optimal_row_group_size, estimated_total_rows, station_count
         );
 
-        // Create parquet write options
+        // Create parquet write options with metadata
         let write_options = ParquetWriteOptions {
             compression: parquet_config.compression_algorithm.to_polars_compression(),
-            statistics: if parquet_config.enable_statistics { StatisticsOptions::full() } else { StatisticsOptions::empty() },
+            statistics: if parquet_config.enable_statistics {
+                StatisticsOptions::full()
+            } else {
+                StatisticsOptions::empty()
+            },
             row_group_size: Some(optimal_row_group_size),
             data_page_size: Some(parquet_config.data_page_size),
+            key_value_metadata: Some(self.create_file_metadata()),
             ..Default::default()
         };
 
@@ -122,38 +122,41 @@ impl ParquetWriter {
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} [{elapsed_precise}] {bytes} {msg}")
                 .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
         );
         progress_bar.set_message("Concatenating batches...");
-        
+
         // Spawn file size monitoring task
         let file_path = self.output_path.clone();
         let pb_clone = progress_bar.clone();
         let monitor_task = tokio::spawn(async move {
             let mut last_size = 0u64;
             let mut last_time = std::time::Instant::now();
-            
+
             // Wait for file to be created (streaming might take a moment to start)
             while !file_path.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            
+
             // Monitor file size growth
             while file_path.exists() {
                 if let Ok(metadata) = std::fs::metadata(&file_path) {
                     let current_size = metadata.len();
                     if current_size > last_size {
                         pb_clone.set_position(current_size);
-                        
+
                         // Calculate transfer rate
                         let now = std::time::Instant::now();
                         let time_diff = now.duration_since(last_time).as_secs_f64();
                         if time_diff > 0.0 {
                             let size_diff = current_size - last_size;
                             let rate = size_diff as f64 / time_diff;
-                            pb_clone.set_message(format!("Streaming to parquet file... ({:.1} MB/s)", rate / 1_000_000.0));
+                            pb_clone.set_message(format!(
+                                "Streaming to parquet file... ({:.1} MB/s)",
+                                rate / 1_000_000.0
+                            ));
                         }
-                        
+
                         last_size = current_size;
                         last_time = now;
                     }
@@ -180,77 +183,61 @@ impl ParquetWriter {
 
         // Use true Polars streaming to write directly to parquet
         progress_bar.set_message("Starting streaming to parquet file...");
-        
-        match final_frame.clone().sink_parquet(
-            SinkTarget::Path(self.output_path.clone().into()),
-            write_options.clone(),
-            None, // No cloud options
-            Default::default() // Use default sink options
-        ) {
-            Ok(sink_frame) => {
-                // Execute the streaming operation using spawn_blocking
-                tokio::task::spawn_blocking(move || {
-                    sink_frame.collect()
-                }).await
-                .map_err(|e| MidasError::ProcessingFailed {
-                    path: self.output_path.clone(),
-                    reason: format!("Failed to spawn streaming sink task: {}", e),
-                })?
-                .map_err(|e| MidasError::ProcessingFailed {
-                    path: self.output_path.clone(),
-                    reason: format!("Failed to execute streaming sink: {}", e),
-                })?;
-                
-                // Stop the monitoring task
-                monitor_task.abort();
-                
-                // Set final file size and complete the progress bar
-                if let Ok(metadata) = std::fs::metadata(&self.output_path) {
-                    progress_bar.set_position(metadata.len());
-                }
-                progress_bar.finish_with_message("Streaming parquet write completed");
-                
-                // Count rows by scanning the written file
-                let count_frame = LazyFrame::scan_parquet(&self.output_path, Default::default())?;
-                let count_df = tokio::task::spawn_blocking(move || {
-                    count_frame.select([len()]).collect()
-                }).await
-                .map_err(|e| MidasError::ProcessingFailed {
-                    path: self.output_path.clone(),
-                    reason: format!("Failed to spawn row counting task: {}", e),
-                })?
-                .map_err(|e| MidasError::ProcessingFailed {
-                    path: self.output_path.clone(),
-                    reason: format!("Failed to count rows: {}", e),
-                })?;
-                let total_rows = count_df
-                    .column("len")?
-                    .get(0)?
-                    .try_extract::<usize>()
-                    .unwrap_or(0);
-                
-                debug!("True streaming completed: {} rows written", total_rows);
-                Ok(total_rows)
-            }
-            Err(e) => {
-                // Stop the monitoring task
-                monitor_task.abort();
-                
-                progress_bar.finish_with_message("Streaming failed, using fallback");
-                warn!("Streaming sink failed ({}), falling back to collect+write", e);
-                
-                // Fallback to standard approach
-                let df = final_frame.collect().map_err(|e| MidasError::ProcessingFailed {
-                    path: self.output_path.clone(),
-                    reason: format!("Failed to collect data for fallback: {}", e),
-                })?;
-                
-                let rows = df.height();
-                self.write_dataframe_optimized(df, &write_options)?;
-                
-                Ok(rows)
-            }
+
+        let sink_frame = final_frame
+            .clone()
+            .sink_parquet(
+                SinkTarget::Path(self.output_path.clone().into()),
+                write_options.clone(),
+                None,               // No cloud options
+                Default::default(), // Use default sink options
+            )
+            .map_err(|e| MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to create streaming sink: {}", e),
+            })?;
+
+        // Execute the streaming operation using spawn_blocking
+        tokio::task::spawn_blocking(move || sink_frame.collect())
+            .await
+            .map_err(|e| MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to spawn streaming sink task: {}", e),
+            })?
+            .map_err(|e| MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to execute streaming sink: {}", e),
+            })?;
+
+        // Stop the monitoring task
+        monitor_task.abort();
+
+        // Set final file size and complete the progress bar
+        if let Ok(metadata) = std::fs::metadata(&self.output_path) {
+            progress_bar.set_position(metadata.len());
         }
+        progress_bar.finish_with_message("Streaming parquet write completed");
+
+        // Count rows by scanning the written file
+        let count_frame = LazyFrame::scan_parquet(&self.output_path, Default::default())?;
+        let count_df = tokio::task::spawn_blocking(move || count_frame.select([len()]).collect())
+            .await
+            .map_err(|e| MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to spawn row counting task: {}", e),
+            })?
+            .map_err(|e| MidasError::ProcessingFailed {
+                path: self.output_path.clone(),
+                reason: format!("Failed to count rows: {}", e),
+            })?;
+        let total_rows = count_df
+            .column("len")?
+            .get(0)?
+            .try_extract::<usize>()
+            .unwrap_or(0);
+
+        debug!("True streaming completed: {} rows written", total_rows);
+        Ok(total_rows)
     }
 }
 
@@ -289,23 +276,78 @@ mod tests {
     }
 
     #[test]
-    fn test_write_options_creation() {
+    fn test_metadata_creation() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = create_test_writer(&temp_dir);
+
+        let metadata = writer.create_file_metadata();
+
+        // Verify metadata is the correct type
+        match &metadata {
+            KeyValueMetadata::Static(kv_pairs) => {
+                assert_eq!(kv_pairs.len(), 3);
+
+                // Check that all required fields are present
+                let keys: Vec<&str> = kv_pairs.iter().map(|kv| kv.key.as_str()).collect();
+                assert!(keys.contains(&"created_by"));
+                assert!(keys.contains(&"created_at"));
+                assert!(keys.contains(&"repository"));
+
+                // Find and verify created_by value
+                let created_by = kv_pairs
+                    .iter()
+                    .find(|kv| kv.key == "created_by")
+                    .unwrap()
+                    .value
+                    .as_ref()
+                    .unwrap();
+                assert!(created_by.contains("midas_processor"));
+                assert!(created_by.contains("v"));
+
+                // Find and verify repository URL
+                let repository = kv_pairs
+                    .iter()
+                    .find(|kv| kv.key == "repository")
+                    .unwrap()
+                    .value
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(repository, "https://github.com/rjl-climate/midas_processor");
+            }
+            _ => panic!("Expected Static metadata variant"),
+        }
+    }
+
+    #[test]
+    fn test_write_options_with_metadata() {
         let temp_dir = TempDir::new().unwrap();
         let writer = create_test_writer(&temp_dir);
 
         let parquet_config = &writer.config.parquet_optimization;
 
-        // Test that write options can be created
+        // Test that write options can be created with metadata
         let write_options = ParquetWriteOptions {
             compression: parquet_config.compression_algorithm.to_polars_compression(),
-            statistics: if parquet_config.enable_statistics { StatisticsOptions::full() } else { StatisticsOptions::empty() },
+            statistics: if parquet_config.enable_statistics {
+                StatisticsOptions::full()
+            } else {
+                StatisticsOptions::empty()
+            },
             row_group_size: Some(1_000_000),
             data_page_size: Some(parquet_config.data_page_size),
+            key_value_metadata: Some(writer.create_file_metadata()),
             ..Default::default()
         };
 
-        // Test that statistics are enabled (no easy way to test StatisticsOptions directly)
-        assert_eq!(write_options.row_group_size, Some(1_000_000));
+        // Verify metadata is included
+        assert!(write_options.key_value_metadata.is_some());
+        let metadata = write_options.key_value_metadata.unwrap();
+        match metadata {
+            KeyValueMetadata::Static(kv_pairs) => {
+                assert_eq!(kv_pairs.len(), 3);
+            }
+            _ => panic!("Expected Static metadata variant"),
+        }
     }
 
     #[test]
