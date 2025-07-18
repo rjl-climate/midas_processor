@@ -42,6 +42,8 @@ impl Args {
                 dataset_path
                     .parent()
                     .unwrap_or(dataset_path)
+                    .parent()
+                    .unwrap_or(dataset_path)
                     .join("parquet")
                     .join(format!("{}.parquet", dataset_name))
             }

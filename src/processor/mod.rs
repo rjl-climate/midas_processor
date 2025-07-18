@@ -228,7 +228,7 @@ impl DatasetProcessor {
         if !batches.is_empty() {
             let total_rows = self
                 .parquet_writer
-                .write_final_parquet(batches, self.station_count)
+                .write_final_parquet(batches, self.station_count, &dataset_type)
                 .await?;
             stats.total_rows = total_rows;
         }

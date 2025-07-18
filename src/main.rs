@@ -10,6 +10,12 @@ use std::path::PathBuf;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Set optimized Polars streaming chunk size for better sink_parquet performance
+    // SAFETY: This is called at the start of main before any threads are spawned
+    unsafe {
+        std::env::set_var("POLARS_STREAMING_CHUNK_SIZE", "100000");
+    }
+
     let args = Args::parse();
 
     // Determine dataset path - either from args or discovery

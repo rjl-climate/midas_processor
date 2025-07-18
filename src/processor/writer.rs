@@ -4,14 +4,15 @@
 //! strategies including streaming, batching, and optimal row group sizing.
 
 use crate::config::{MidasConfig, SystemProfile};
-use crate::error::{MidasError, Result};
+use crate::error::Result;
+use crate::models::DatasetType;
 
 use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::io::parquet::write::KeyValueMetadata;
 use polars::prelude::StatisticsOptions;
 use polars::prelude::{
-    LazyFrame, ParquetWriteOptions, SinkTarget, SortMultipleOptions, UnionArgs, col, concat, len,
+    LazyFrame, ParquetWriteOptions, SortMultipleOptions, UnionArgs, col, concat,
 };
 use std::path::PathBuf;
 use tracing::debug;
@@ -62,6 +63,7 @@ impl ParquetWriter {
         &self,
         frames: Vec<LazyFrame>,
         station_count: usize,
+        dataset_type: &DatasetType,
     ) -> Result<usize> {
         if frames.is_empty() {
             return Ok(0);
@@ -73,7 +75,7 @@ impl ParquetWriter {
         );
 
         // Always use streaming approach
-        self.write_with_optimal_row_groups(frames, station_count)
+        self.write_with_optimal_row_groups(frames, station_count, dataset_type)
             .await
     }
 
@@ -82,6 +84,7 @@ impl ParquetWriter {
         &self,
         batches: Vec<LazyFrame>,
         station_count: usize,
+        dataset_type: &DatasetType,
     ) -> Result<usize> {
         debug!(
             "Starting true streaming parquet write for {} batches",
@@ -116,128 +119,84 @@ impl ParquetWriter {
             ..Default::default()
         };
 
-        // Create simple spinner for streaming operation with file size monitoring
-        let progress_bar = ProgressBar::new_spinner();
-        progress_bar.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} [{elapsed_precise}] {bytes} {msg}")
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-        );
-        progress_bar.set_message("Concatenating batches...");
-
-        // Spawn file size monitoring task
-        let file_path = self.output_path.clone();
-        let pb_clone = progress_bar.clone();
-        let monitor_task = tokio::spawn(async move {
-            let mut last_size = 0u64;
-            let mut last_time = std::time::Instant::now();
-
-            // Wait for file to be created (streaming might take a moment to start)
-            while !file_path.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-
-            // Monitor file size growth
-            while file_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&file_path) {
-                    let current_size = metadata.len();
-                    if current_size > last_size {
-                        pb_clone.set_position(current_size);
-
-                        // Calculate transfer rate
-                        let now = std::time::Instant::now();
-                        let time_diff = now.duration_since(last_time).as_secs_f64();
-                        if time_diff > 0.0 {
-                            let size_diff = current_size - last_size;
-                            let rate = size_diff as f64 / time_diff;
-                            pb_clone.set_message(format!(
-                                "Streaming to parquet file... ({:.1} MB/s)",
-                                rate / 1_000_000.0
-                            ));
-                        }
-
-                        last_size = current_size;
-                        last_time = now;
-                    }
-                    pb_clone.tick();
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        });
-
         // Concatenate all LazyFrames (no collection - stays lazy)
         let combined_frame = concat(batches, UnionArgs::default())?;
 
-        // Apply station-timestamp sorting if enabled (stays lazy)
-        let final_frame = if self.config.parquet_optimization.sort_by_station_then_time {
-            progress_bar.set_message("Applying station-timestamp sorting...");
-            debug!("Applying station-timestamp sorting for optimal query performance");
-            combined_frame.sort_by_exprs(
-                [col("station_id"), col("ob_end_time")],
-                SortMultipleOptions::default(),
-            )
-        } else {
-            combined_frame
-        };
+        // Always sort by station_id then timestamp for optimal parquet performance
+        let final_frame = combined_frame.sort_by_exprs(
+            [col("station_id"), col(dataset_type.primary_time_column())],
+            SortMultipleOptions::default(),
+        );
 
-        // Use true Polars streaming to write directly to parquet
-        progress_bar.set_message("Starting streaming to parquet file...");
-
-        let sink_frame = final_frame
-            .clone()
-            .sink_parquet(
-                SinkTarget::Path(self.output_path.clone().into()),
-                write_options.clone(),
-                None,               // No cloud options
-                Default::default(), // Use default sink options
-            )
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to create streaming sink: {}", e),
-            })?;
-
-        // Execute the streaming operation using spawn_blocking
-        tokio::task::spawn_blocking(move || sink_frame.collect())
-            .await
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to spawn streaming sink task: {}", e),
-            })?
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to execute streaming sink: {}", e),
-            })?;
-
-        // Stop the monitoring task
-        monitor_task.abort();
-
-        // Set final file size and complete the progress bar
-        if let Ok(metadata) = std::fs::metadata(&self.output_path) {
-            progress_bar.set_position(metadata.len());
+        // Ensure output directory exists
+        if let Some(parent) = self.output_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        progress_bar.finish_with_message("Streaming parquet write completed");
 
-        // Count rows by scanning the written file
-        let count_frame = LazyFrame::scan_parquet(&self.output_path, Default::default())?;
-        let count_df = tokio::task::spawn_blocking(move || count_frame.select([len()]).collect())
-            .await
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to spawn row counting task: {}", e),
-            })?
-            .map_err(|e| MidasError::ProcessingFailed {
-                path: self.output_path.clone(),
-                reason: format!("Failed to count rows: {}", e),
-            })?;
-        let total_rows = count_df
-            .column("len")?
-            .get(0)?
-            .try_extract::<usize>()
-            .unwrap_or(0);
+        // Create spinner to show parquet creation progress
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        spinner.set_message("Creating parquet file, this will take a few minutes...");
 
-        debug!("True streaming completed: {} rows written", total_rows);
-        Ok(total_rows)
+        // Clone spinner for the animation task
+        let spinner_clone = spinner.clone();
+
+        // Start spinner animation task
+        let animation_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(80));
+            loop {
+                interval.tick().await;
+                spinner_clone.tick();
+            }
+        });
+
+        // Write with minimal async complexity - use spawn_blocking only for the write operation
+        let output_path = self.output_path.clone();
+        debug!("Writing parquet to: {:?}", output_path);
+
+        let result = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
+            let df = final_frame.collect()?;
+            let row_count = df.height();
+
+            let mut file = std::fs::File::create(&output_path)?;
+
+            use polars::prelude::ParquetWriter;
+            let mut df_mut = df;
+            let mut writer = ParquetWriter::new(&mut file)
+                .with_compression(write_options.compression)
+                .with_row_group_size(write_options.row_group_size)
+                .with_data_page_size(write_options.data_page_size);
+
+            // Add metadata if present
+            if let Some(metadata) = write_options.key_value_metadata {
+                writer = writer.with_key_value_metadata(Some(metadata));
+            }
+
+            writer.finish(&mut df_mut)?;
+
+            Ok(row_count)
+        })
+        .await
+        .map_err(|e| crate::error::MidasError::ProcessingFailed {
+            path: self.output_path.clone(),
+            reason: format!("Failed to spawn write task: {}", e),
+        })??;
+
+        // Stop the animation task
+        animation_task.abort();
+
+        spinner.finish_with_message("Parquet file created successfully");
+        debug!(
+            "Parquet write completed: {} rows to {:?}",
+            result, self.output_path
+        );
+
+        Ok(result)
     }
 }
 
@@ -268,7 +227,10 @@ mod tests {
         let writer = create_test_writer(&temp_dir);
 
         let empty_frames: Vec<LazyFrame> = vec![];
-        let result = writer.write_final_parquet(empty_frames, 0).await;
+        let dataset_type = DatasetType::Temperature;
+        let result = writer
+            .write_final_parquet(empty_frames, 0, &dataset_type)
+            .await;
 
         // Should handle empty frames gracefully
         assert!(result.is_ok());

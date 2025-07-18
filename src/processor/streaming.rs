@@ -172,24 +172,13 @@ impl StreamingProcessor {
             // Convert this batch to a single LazyFrame if it has data
             if !batch_frames.is_empty() {
                 debug!("Concatenating batch of {} frames", batch_frames.len());
-                let mut batch_frame = if batch_frames.len() == 1 {
+                let batch_frame = if batch_frames.len() == 1 {
                     batch_frames.into_iter().next().unwrap()
                 } else {
                     concat(batch_frames, UnionArgs::default())?
                 };
 
-                // Apply station-aware sorting within batch if enabled
-                if self.config.parquet_optimization.sort_by_station_then_time {
-                    debug!(
-                        "Applying station-timestamp sorting to batch {}",
-                        batch_num + 1
-                    );
-                    batch_frame = batch_frame.sort_by_exprs(
-                        [col("station_id"), col("ob_end_time")],
-                        SortMultipleOptions::default(),
-                    );
-                }
-
+                // Note: Batch-level sorting removed for performance - final sorting happens in writer
                 all_batches.push(batch_frame);
             }
 

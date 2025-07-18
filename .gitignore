@@ -221,6 +221,11 @@ tags
 # AI
 
 .claude/
+PRPs/
+CLAUDE.MD
+PLANNING.md
+TASK.md
+TODO.md
 
 # Backup directory for code preservation
 backup_original/

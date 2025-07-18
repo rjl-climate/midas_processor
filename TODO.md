@@ -2,7 +2,7 @@
 # TODO:
 
 
-python tests/validate_parquet.py "/Users/richardlyon/Library/Application Support/midas-fetcher/cache/parquet/uk-radiation-obs-202507.parquet" "/Users/richardlyon/Library/Application Support/midas-fetcher/cache/uk-radiation-obs-202507" --performance-tests --full-validation --json-report validation_report.json
+python tests/validate_parquet.py "/Users/richardlyon/Library/Application Support/midas-fetcher/parquet/uk-radiation-obs-202507.parquet" "/Users/richardlyon/Library/Application Support/midas-fetcher/cache/uk-radiation-obs-202507" --performance-tests --full-validation --json-report validation_report.json
 
 
 ⏺ Perfect! I have successfully refactored the midas_processor codebase to use Polars v0.49.1. Here's a

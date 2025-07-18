@@ -16,9 +16,6 @@ pub struct ParquetOptimizationConfig {
     /// Enable station-based partitioning for optimal query performance
     pub partition_by_station: bool,
 
-    /// Sort data by station_id then timestamp before writing
-    pub sort_by_station_then_time: bool,
-
     /// Target row group size (rows per group) - will be dynamically calculated if 0
     pub target_row_group_size: usize,
 
@@ -84,7 +81,6 @@ impl Default for ParquetOptimizationConfig {
     fn default() -> Self {
         Self {
             partition_by_station: true,
-            sort_by_station_then_time: true,
             target_row_group_size: 0, // 0 = auto-calculate based on strategy
             compression_algorithm: CompressionAlgorithm::Snappy,
             enable_statistics: true,
@@ -395,8 +391,8 @@ impl Default for MidasConfig {
             discovery_only: false,
             skip_schema_validation: false,
             enable_gpu: false,
-            streaming_chunk_size: 32768,
-            max_concurrent_files: 8, // Controlled concurrency
+            streaming_chunk_size: 100000, // Optimized for sink_parquet performance
+            max_concurrent_files: 8,      // Controlled concurrency
             parquet_optimization: ParquetOptimizationConfig::default(),
             dataset_configs,
         }
