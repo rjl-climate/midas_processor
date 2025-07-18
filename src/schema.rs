@@ -11,6 +11,7 @@ use std::path::Path;
 use tracing::{debug, warn};
 
 /// Schema manager for different MIDAS dataset types
+#[derive(Clone, Debug)]
 pub struct SchemaManager {
     configs: std::collections::HashMap<DatasetType, DatasetConfig>,
 }

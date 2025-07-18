@@ -266,6 +266,9 @@ pub struct MidasConfig {
     /// Discovery only mode (analyze schema and exit without processing)
     pub discovery_only: bool,
 
+    /// Skip schema validation (for testing)
+    pub skip_schema_validation: bool,
+
     /// Enable GPU acceleration (requires CUDA-compatible GPU)
     pub enable_gpu: bool,
 
@@ -393,6 +396,7 @@ impl Default for MidasConfig {
             batch_size: 80, // Increase for better throughput with streaming
             force_reprocess: false,
             discovery_only: false,
+            skip_schema_validation: false,
             enable_gpu: false,
             enable_streaming: true, // Enable by default for large datasets
             streaming_chunk_size: 32768,

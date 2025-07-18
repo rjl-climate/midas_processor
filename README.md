@@ -26,7 +26,7 @@ MIDAS (Met Office Integrated Data Archive System) contains historical weather ob
 ## Key Features
 
 ### 🚀 **Performance Optimizations**
-- **Large row groups** (500K rows vs ~736 rows in original)
+- **Large row groups** (500K rows)
 - **Smart compression** (Snappy, ZSTD, LZ4 options)
 - **Column statistics** for query pruning
 - **Memory-efficient streaming** for large datasets
@@ -34,8 +34,6 @@ MIDAS (Met Office Integrated Data Archive System) contains historical weather ob
 ### 🔍 **Intelligent Processing**
 - **Automatic dataset discovery** from midas-fetcher cache
 - **Schema detection** and validation
-- **Station metadata enhancement** (coordinates, elevation)
-- **Quality control** with configurable error handling
 
 ### 💻 **User-Friendly Interface**
 - **Interactive dataset selection** when run without arguments
@@ -104,43 +102,16 @@ midas-processor /path/to/dataset --compression lz4 --verbose
 | `--discovery-only` | Analyze schema without converting | `false` |
 | `--verbose` | Enable detailed logging | `false` |
 
-## Performance
-
-### Query Performance Improvements
-- **Station-based queries**: 100x faster (direct partition access)
-- **Time-range queries**: 10x faster (temporal sorting + statistics)
-- **Combined station+time queries**: 500x faster (optimal structure)
-
-### Storage Efficiency
-- **Compression**: 30-50% better than original
-- **Metadata overhead**: 95% reduction in row group metadata
-- **I/O efficiency**: 90% reduction for typical analytical queries
-
-### Benchmark Results
-| Dataset | Original Size | Parquet Size | Compression Ratio | Conversion Time |
-|---------|---------------|--------------|-------------------|-----------------|
-| UK Daily Rain (161k files) | ~4.9 GB | ~2.1 GB | 57% | ~45 minutes |
-| UK Temperature (41k files) | ~2.1 GB | ~0.9 GB | 43% | ~12 minutes |
-| UK Wind (12k files) | ~9.1 GB | ~3.8 GB | 42% | ~28 minutes |
-
-*Benchmarks on M2 MacBook Pro with 32GB RAM*
 
 ## Technical Details
 
 ### Data Structure Optimizations
 
 1. **Station-Timestamp Sorting**: Data is sorted by `station_id` then `ob_end_time` for optimal query performance
-2. **Large Row Groups**: 500K rows per group (vs ~736 in original) for better compression and fewer metadata operations
+2. **Large Row Groups**: 500K rows per group for better compression and fewer metadata operations
 3. **Column Statistics**: Enabled for all columns to allow query engines to skip irrelevant data
 4. **Memory Streaming**: Processes datasets larger than available RAM through streaming execution
 
-### Schema Enhancement
-
-The converter automatically adds station metadata:
-- Geographic coordinates (`latitude`, `longitude`)
-- Station elevation (`height`, `height_units`)
-- Administrative location (`county`)
-- Station identifiers (`station_id`, `station_name`)
 
 ### Quality Control
 
@@ -268,9 +239,9 @@ If you use this tool in your research, please cite:
 ```bibtex
 @software{midas_processor,
   title = {MIDAS Processor: High-Performance Climate Data Processing},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/your-org/midas-processor}
+  author = {Richard Lyon},
+  year = {2025},
+  url = {https://github.com/rjl-climate/midas_processor}
 }
 ```
 
