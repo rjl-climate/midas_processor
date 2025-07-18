@@ -14,25 +14,16 @@ fn create_multi_station_dataset(temp_dir: &TempDir) -> (std::path::PathBuf, std:
     let station1_path = qcv_path.join("county1").join("station1");
     fs::create_dir_all(&station1_path).unwrap();
 
-    let csv_content_1 = r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,00001
-name,Test Station 1
-latitude,51.5
-longitude,-0.1
-height,10
-met_domain_name,MIDAS
-history,Data from test station 1
-data_end
-
+    let csv_content_1 = r#"observation_station,G,Test Station 1
+midas_station_id,G,00001
+historic_county_name,G,county1
+location,G,51.5,-0.1
+height,G,10,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 2023-01-01,5.0,0
 2023-01-02,3.2,0
-"#;
+end data"#;
 
     fs::write(station1_path.join("rain_2023.csv"), csv_content_1).unwrap();
 
@@ -40,26 +31,17 @@ ob_end_time,prcp_amt,prcp_amt_q
     let station2_path = qcv_path.join("county1").join("station2");
     fs::create_dir_all(&station2_path).unwrap();
 
-    let csv_content_2 = r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,00002
-name,Test Station 2
-latitude,52.0
-longitude,-0.2
-height,20
-met_domain_name,MIDAS
-history,Data from test station 2
-data_end
-
+    let csv_content_2 = r#"observation_station,G,Test Station 2
+midas_station_id,G,00002
+historic_county_name,G,county1
+location,G,52.0,-0.2
+height,G,20,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 2023-01-01,2.5,0
 2023-01-02,1.8,0
 2023-01-03,4.1,0
-"#;
+end data"#;
 
     fs::write(station2_path.join("rain_2023.csv"), csv_content_2).unwrap();
 
@@ -67,27 +49,18 @@ ob_end_time,prcp_amt,prcp_amt_q
     let station3_path = qcv_path.join("county2").join("station3");
     fs::create_dir_all(&station3_path).unwrap();
 
-    let csv_content_3 = r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,00003
-name,Test Station 3
-latitude,53.0
-longitude,-0.3
-height,30
-met_domain_name,MIDAS
-history,Data from test station 3
-data_end
-
+    let csv_content_3 = r#"observation_station,G,Test Station 3
+midas_station_id,G,00003
+historic_county_name,G,county2
+location,G,53.0,-0.3
+height,G,30,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
 2023-01-02,0.5,0
 2023-01-03,2.3,0
 2023-01-04,0.0,0
-"#;
+end data"#;
 
     fs::write(station3_path.join("rain_2023.csv"), csv_content_3).unwrap();
 
@@ -171,35 +144,25 @@ async fn test_large_dataset_simulation() {
             // Create 2 files per station
             for year in 2022..=2023 {
                 let csv_content = format!(
-                    r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,{:05}
-name,Test Station {}-{}
-latitude,{}.{}
-longitude,-0.{}
-height,{}0
-met_domain_name,MIDAS
-history,Data from test station {}-{}
-data_end
-
+                    r#"observation_station,G,Test Station {}-{}
+midas_station_id,G,{:05}
+historic_county_name,G,county{}
+location,G,{}.{},-0.{}
+height,G,{}0,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 {}-01-01,{}.0,0
 {}-01-02,{}.5,0
 {}-01-03,{}.2,0
-"#,
-                    county * 100 + station,
+end data"#,
                     county,
                     station,
+                    county * 100 + station,
+                    county,
                     50 + county,
                     station,
                     station,
                     county * 10 + station,
-                    county,
-                    station,
                     year,
                     station,
                     year,
@@ -251,24 +214,15 @@ async fn test_mixed_file_sizes() {
     let small_station_path = qcv_path.join("county1").join("small_station");
     fs::create_dir_all(&small_station_path).unwrap();
 
-    let small_csv = r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,00001
-name,Small Station
-latitude,51.5
-longitude,-0.1
-height,10
-met_domain_name,MIDAS
-history,Small station data
-data_end
-
+    let small_csv = r#"observation_station,G,Small Station
+midas_station_id,G,00001
+historic_county_name,G,county1
+location,G,51.5,-0.1
+height,G,10,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 2023-01-01,1.0,0
-"#;
+end data"#;
 
     fs::write(small_station_path.join("rain_2023.csv"), small_csv).unwrap();
 
@@ -276,21 +230,12 @@ ob_end_time,prcp_amt,prcp_amt_q
     let large_station_path = qcv_path.join("county1").join("large_station");
     fs::create_dir_all(&large_station_path).unwrap();
 
-    let mut large_csv = r#"data_type,UK_Daily_Rainfall,9
-src_id,8
-met_domain_name,MIDAS
-version_num,1.0
-station_type,IM
-id_type,MIDAS
-id,00002
-name,Large Station
-latitude,51.6
-longitude,-0.2
-height,20
-met_domain_name,MIDAS
-history,Large station data
-data_end
-
+    let mut large_csv = r#"observation_station,G,Large Station
+midas_station_id,G,00002
+historic_county_name,G,county1
+location,G,51.6,-0.2
+height,G,20,m
+data
 ob_end_time,prcp_amt,prcp_amt_q
 "#
     .to_string();
@@ -299,6 +244,7 @@ ob_end_time,prcp_amt,prcp_amt_q
     for day in 1..=31 {
         large_csv.push_str(&format!("2023-01-{:02},{}.0,0\n", day, day % 10));
     }
+    large_csv.push_str("end data");
 
     fs::write(large_station_path.join("rain_2023.csv"), large_csv).unwrap();
 

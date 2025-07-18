@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(name = "midas")]
 #[command(about = "Convert MIDAS BADC-CSV weather data to optimized Parquet format")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 pub struct Args {
     /// Path to the MIDAS dataset directory (optional - will discover from cache if not provided)
     #[arg(value_name = "DATASET_PATH")]

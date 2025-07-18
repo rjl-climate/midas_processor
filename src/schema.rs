@@ -122,7 +122,7 @@ impl SchemaManager {
         for name in column_names {
             let name = name.trim();
             let data_type = self.infer_column_type(name);
-            fields.push(Field::new(name, data_type));
+            fields.push(Field::new(name.into(), data_type));
         }
 
         Ok(Schema::from_iter(fields))
@@ -423,21 +423,21 @@ impl DatasetConfig {
     /// Enhanced rain dataset schema with all columns
     pub fn rain_config() -> (Schema, Vec<String>, crate::models::CommonPatterns) {
         let schema = Schema::from_iter([
-            Field::new("ob_date", DataType::String),
-            Field::new("id", DataType::String),
-            Field::new("id_type", DataType::String),
-            Field::new("version_num", DataType::Int32),
-            Field::new("met_domain_name", DataType::String),
-            Field::new("ob_end_ctime", DataType::String),
-            Field::new("ob_day_cnt", DataType::Int32),
-            Field::new("src_id", DataType::Int32),
-            Field::new("rec_st_ind", DataType::Int32),
-            Field::new("prcp_amt", DataType::Float64),
-            Field::new("ob_day_cnt_q", DataType::Int32),
-            Field::new("prcp_amt_q", DataType::Int32),
-            Field::new("prcp_amt_j", DataType::String),
-            Field::new("meto_stmp_time", DataType::String),
-            Field::new("midas_stmp_etime", DataType::String),
+            Field::new("ob_date".into(), DataType::String),
+            Field::new("id".into(), DataType::String),
+            Field::new("id_type".into(), DataType::String),
+            Field::new("version_num".into(), DataType::Int32),
+            Field::new("met_domain_name".into(), DataType::String),
+            Field::new("ob_end_ctime".into(), DataType::String),
+            Field::new("ob_day_cnt".into(), DataType::Int32),
+            Field::new("src_id".into(), DataType::Int32),
+            Field::new("rec_st_ind".into(), DataType::Int32),
+            Field::new("prcp_amt".into(), DataType::Float64),
+            Field::new("ob_day_cnt_q".into(), DataType::Int32),
+            Field::new("prcp_amt_q".into(), DataType::Int32),
+            Field::new("prcp_amt_j".into(), DataType::String),
+            Field::new("meto_stmp_time".into(), DataType::String),
+            Field::new("midas_stmp_etime".into(), DataType::String),
         ]);
 
         // Columns frequently empty in historical data
@@ -459,28 +459,28 @@ impl DatasetConfig {
     /// Enhanced temperature dataset schema
     pub fn temperature_config() -> (Schema, Vec<String>, crate::models::CommonPatterns) {
         let schema = Schema::from_iter([
-            Field::new("ob_end_time", DataType::String),
-            Field::new("id_type", DataType::String),
-            Field::new("id", DataType::String),
-            Field::new("ob_hour_count", DataType::Int32),
-            Field::new("version_num", DataType::Int32),
-            Field::new("met_domain_name", DataType::String),
-            Field::new("src_id", DataType::Int32),
-            Field::new("rec_st_ind", DataType::Int32),
-            Field::new("max_air_temp", DataType::Float64),
-            Field::new("min_air_temp", DataType::Float64),
-            Field::new("min_grss_temp", DataType::Float64),
-            Field::new("min_conc_temp", DataType::Float64),
-            Field::new("max_air_temp_q", DataType::Int32),
-            Field::new("min_air_temp_q", DataType::Int32),
-            Field::new("min_grss_temp_q", DataType::Int32),
-            Field::new("min_conc_temp_q", DataType::Int32),
-            Field::new("max_air_temp_j", DataType::String),
-            Field::new("min_air_temp_j", DataType::String),
-            Field::new("min_grss_temp_j", DataType::String),
-            Field::new("min_conc_temp_j", DataType::String),
-            Field::new("meto_stmp_time", DataType::String),
-            Field::new("midas_stmp_etime", DataType::String),
+            Field::new("ob_end_time".into(), DataType::String),
+            Field::new("id_type".into(), DataType::String),
+            Field::new("id".into(), DataType::String),
+            Field::new("ob_hour_count".into(), DataType::Int32),
+            Field::new("version_num".into(), DataType::Int32),
+            Field::new("met_domain_name".into(), DataType::String),
+            Field::new("src_id".into(), DataType::Int32),
+            Field::new("rec_st_ind".into(), DataType::Int32),
+            Field::new("max_air_temp".into(), DataType::Float64),
+            Field::new("min_air_temp".into(), DataType::Float64),
+            Field::new("min_grss_temp".into(), DataType::Float64),
+            Field::new("min_conc_temp".into(), DataType::Float64),
+            Field::new("max_air_temp_q".into(), DataType::Int32),
+            Field::new("min_air_temp_q".into(), DataType::Int32),
+            Field::new("min_grss_temp_q".into(), DataType::Int32),
+            Field::new("min_conc_temp_q".into(), DataType::Int32),
+            Field::new("max_air_temp_j".into(), DataType::String),
+            Field::new("min_air_temp_j".into(), DataType::String),
+            Field::new("min_grss_temp_j".into(), DataType::String),
+            Field::new("min_conc_temp_j".into(), DataType::String),
+            Field::new("meto_stmp_time".into(), DataType::String),
+            Field::new("midas_stmp_etime".into(), DataType::String),
         ]);
 
         // Commonly empty columns in temperature data
@@ -510,30 +510,30 @@ impl DatasetConfig {
     /// Wind dataset schema (complete)
     pub fn wind_config() -> (Schema, Vec<String>, crate::models::CommonPatterns) {
         let schema = Schema::from_iter([
-            Field::new("ob_end_time", DataType::String),
-            Field::new("id_type", DataType::String),
-            Field::new("id", DataType::String),
-            Field::new("ob_hour_count", DataType::Int32),
-            Field::new("met_domain_name", DataType::String),
-            Field::new("version_num", DataType::Int32),
-            Field::new("src_id", DataType::Int32),
-            Field::new("rec_st_ind", DataType::Int32),
-            Field::new("mean_wind_dir", DataType::Int32),
-            Field::new("mean_wind_speed", DataType::Float64),
-            Field::new("max_gust_dir", DataType::Int32),
-            Field::new("max_gust_speed", DataType::Float64),
-            Field::new("max_gust_ctime", DataType::String),
-            Field::new("mean_wind_dir_q", DataType::Int32),
-            Field::new("mean_wind_speed_q", DataType::Int32),
-            Field::new("max_gust_dir_q", DataType::Int32),
-            Field::new("max_gust_speed_q", DataType::Int32),
-            Field::new("max_gust_ctime_q", DataType::Int32),
-            Field::new("mean_wind_dir_j", DataType::String),
-            Field::new("mean_wind_speed_j", DataType::String),
-            Field::new("max_gust_dir_j", DataType::String),
-            Field::new("max_gust_speed_j", DataType::String),
-            Field::new("meto_stmp_time", DataType::String),
-            Field::new("midas_stmp_etime", DataType::String),
+            Field::new("ob_end_time".into(), DataType::String),
+            Field::new("id_type".into(), DataType::String),
+            Field::new("id".into(), DataType::String),
+            Field::new("ob_hour_count".into(), DataType::Int32),
+            Field::new("met_domain_name".into(), DataType::String),
+            Field::new("version_num".into(), DataType::Int32),
+            Field::new("src_id".into(), DataType::Int32),
+            Field::new("rec_st_ind".into(), DataType::Int32),
+            Field::new("mean_wind_dir".into(), DataType::Int32),
+            Field::new("mean_wind_speed".into(), DataType::Float64),
+            Field::new("max_gust_dir".into(), DataType::Int32),
+            Field::new("max_gust_speed".into(), DataType::Float64),
+            Field::new("max_gust_ctime".into(), DataType::String),
+            Field::new("mean_wind_dir_q".into(), DataType::Int32),
+            Field::new("mean_wind_speed_q".into(), DataType::Int32),
+            Field::new("max_gust_dir_q".into(), DataType::Int32),
+            Field::new("max_gust_speed_q".into(), DataType::Int32),
+            Field::new("max_gust_ctime_q".into(), DataType::Int32),
+            Field::new("mean_wind_dir_j".into(), DataType::String),
+            Field::new("mean_wind_speed_j".into(), DataType::String),
+            Field::new("max_gust_dir_j".into(), DataType::String),
+            Field::new("max_gust_speed_j".into(), DataType::String),
+            Field::new("meto_stmp_time".into(), DataType::String),
+            Field::new("midas_stmp_etime".into(), DataType::String),
         ]);
 
         let empty_columns = vec![
@@ -559,17 +559,17 @@ impl DatasetConfig {
     /// Radiation dataset schema (needs refinement based on actual data)
     pub fn radiation_config() -> (Schema, Vec<String>, crate::models::CommonPatterns) {
         let schema = Schema::from_iter([
-            Field::new("ob_end_time", DataType::String),
-            Field::new("id", DataType::String),
-            Field::new("id_type", DataType::String),
-            Field::new("ob_hour_count", DataType::Int32),
-            Field::new("version_num", DataType::Int32),
-            Field::new("met_domain_name", DataType::String),
-            Field::new("src_id", DataType::Int32),
-            Field::new("rec_st_ind", DataType::Int32),
-            Field::new("glbl_irad_amt", DataType::Int32),
-            Field::new("meto_stmp_time", DataType::String),
-            Field::new("midas_stmp_etime", DataType::String),
+            Field::new("ob_end_time".into(), DataType::String),
+            Field::new("id".into(), DataType::String),
+            Field::new("id_type".into(), DataType::String),
+            Field::new("ob_hour_count".into(), DataType::Int32),
+            Field::new("version_num".into(), DataType::Int32),
+            Field::new("met_domain_name".into(), DataType::String),
+            Field::new("src_id".into(), DataType::Int32),
+            Field::new("rec_st_ind".into(), DataType::Int32),
+            Field::new("glbl_irad_amt".into(), DataType::Int32),
+            Field::new("meto_stmp_time".into(), DataType::String),
+            Field::new("midas_stmp_etime".into(), DataType::String),
         ]);
 
         let empty_columns = vec![];

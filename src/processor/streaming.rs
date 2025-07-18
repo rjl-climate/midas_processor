@@ -252,18 +252,17 @@ impl StreamingProcessor {
         let data_skip_rows = boundaries.skip_rows + 1;
         let adjusted_data_rows = boundaries.data_rows.map(|rows| rows.saturating_sub(1));
 
-        // Use optimized CSV reading with memory-efficient settings
-        let df = CsvReader::from_path(file_path)?
+        // Use optimized CSV reading with lazy evaluation for better performance
+        let lazy_frame = LazyCsvReader::new(file_path)
             .with_skip_rows(data_skip_rows)
             .with_n_rows(adjusted_data_rows)
             .with_schema(Some(Arc::new(config.schema.clone())))
             .with_ignore_errors(true)
-            .has_header(false)
-            .low_memory(true) // Enable low memory mode for better streaming
+            .with_has_header(false)
+            .with_low_memory(true) // Enable low memory mode for better streaming
             .with_rechunk(false) // Avoid unnecessary rechunking
+            .with_infer_schema_length(Some(0)) // Skip schema inference since we provide it
             .finish()?;
-
-        let lazy_frame = df.lazy();
 
         // Step 4: Add metadata columns using with_columns
         let enhanced_frame = lazy_frame.with_columns([

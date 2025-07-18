@@ -272,9 +272,6 @@ pub struct MidasConfig {
     /// Enable GPU acceleration (requires CUDA-compatible GPU)
     pub enable_gpu: bool,
 
-    /// Enable streaming execution for large datasets
-    pub enable_streaming: bool,
-
     /// Streaming chunk size for memory management
     pub streaming_chunk_size: usize,
 
@@ -398,7 +395,6 @@ impl Default for MidasConfig {
             discovery_only: false,
             skip_schema_validation: false,
             enable_gpu: false,
-            enable_streaming: true, // Enable by default for large datasets
             streaming_chunk_size: 32768,
             max_concurrent_files: 8, // Controlled concurrency
             parquet_optimization: ParquetOptimizationConfig::default(),
@@ -450,9 +446,9 @@ impl MidasConfig {
         self
     }
 
-    /// Disable streaming execution
-    pub fn without_streaming(mut self) -> Self {
-        self.enable_streaming = false;
+    /// Configure for minimal memory usage (reduces streaming chunk size)
+    pub fn with_minimal_memory(mut self) -> Self {
+        self.streaming_chunk_size = 8192; // Smaller chunk size
         self
     }
 
