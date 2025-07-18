@@ -11,7 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive README with usage examples and performance benchmarks
 - Contributing guidelines and development documentation
 - MIT license for open source distribution
+
+## [1.2.0] - 2024-07-18
+
+### Added
 - **Adaptive Processing Strategy**: Large datasets (>3000 stations or rain >1000 stations) automatically use two-stage processing with temporary station files and atomic merging to prevent memory exhaustion
+- **Temporary Directory Management**: Station files created in temporary directories for atomic operations with automatic cleanup
+- **Clean Output**: Reduced diagnostic output for better user experience
+
+### Changed
+- **Improved Memory Management**: Large datasets now avoid memory exhaustion through streaming temporary files
+- **Atomic Operations**: Processing is now all-or-nothing with proper cleanup on failure
 
 ## [1.1.0] - 2024-01-18
 

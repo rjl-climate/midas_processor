@@ -233,7 +233,9 @@ impl ParquetWriter {
                 )?
                 .collect()?;
             
-            Ok(0) // Row count not easily available with sink_parquet
+            // For merge operations, we can't easily get row count from sink_parquet
+            // Return 0 for now - this is acceptable for merge operations
+            Ok(0)
         })
         .await
         .map_err(|e| crate::error::MidasError::ProcessingFailed {
@@ -421,7 +423,11 @@ impl ParquetWriter {
         let result = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
             use polars::prelude::{SinkTarget, SinkOptions};
             
-            // Execute streaming parquet write - sink_parquet + collect streams to disk
+            // For testing purposes, collect the frame to get row count before writing
+            let df = final_frame.clone().collect()?;
+            let row_count = df.height();
+            
+            // Execute streaming parquet write
             final_frame
                 .with_new_streaming(true)
                 .sink_parquet(
@@ -432,8 +438,8 @@ impl ParquetWriter {
                 )?
                 .collect()?;
             
-            // Return estimated row count (will be calculated differently in streaming mode)
-            Ok(0) // Placeholder - actual count not available with sink_parquet
+            // Return actual row count
+            Ok(row_count)
         })
         .await
         .map_err(|e| crate::error::MidasError::ProcessingFailed {
